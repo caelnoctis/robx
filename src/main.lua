@@ -108,14 +108,6 @@ local function safeOnce(fn, ...)
     return ok
 end
 
-local function esc(text)
-    text = tostring(text)
-    text = string.gsub(text, "&", "&amp;")
-    text = string.gsub(text, "<", "&lt;")
-    text = string.gsub(text, ">", "&gt;")
-    return text
-end
-
 local function copyText(text)
     local fn = setclipboard or toclipboard
     if fn then
@@ -140,6 +132,16 @@ end
 
 local function getCamera()
     return workspace.CurrentCamera
+end
+
+local function randomName()
+    local ok, guid = pcall(function()
+        return HttpService:GenerateGUID(false)
+    end)
+    if ok and guid then
+        return guid
+    end
+    return tostring(math.random(100000, 999999)) .. tostring(os.clock())
 end
 
 ----------------------------------------------------------------------
@@ -178,68 +180,26 @@ local S = {
     instantInteract = false,
     antiAfk = true,
 
+    freeMouse = true,
+    cursorHalo = true,
+
     logRemotes = false,
 }
 
 local TeamColors = {
-    EVIL = Color3.fromRGB(255, 64, 64),
-    VEIL = Color3.fromRGB(255, 196, 64),
-    TOWN = Color3.fromRGB(80, 230, 120),
+    EVIL = Color3.fromRGB(255, 70, 80),
+    VEIL = Color3.fromRGB(255, 196, 70),
+    TOWN = Color3.fromRGB(80, 225, 130),
 }
-local UNKNOWN_COLOR = Color3.fromRGB(215, 215, 225)
-local GOOD_COLOR = Color3.fromRGB(80, 230, 140)
-local BAD_COLOR = Color3.fromRGB(255, 90, 90)
+local UNKNOWN_COLOR = Color3.fromRGB(225, 225, 235)
 
 local function teamColor(team)
     return (team and TeamColors[team]) or UNKNOWN_COLOR
 end
 
 ----------------------------------------------------------------------
--- GUI helpers
+-- GUI root
 ----------------------------------------------------------------------
-local Theme = {
-    Bg = Color3.fromRGB(13, 12, 20),
-    Panel = Color3.fromRGB(20, 18, 32),
-    Elem = Color3.fromRGB(30, 27, 46),
-    ElemHover = Color3.fromRGB(42, 38, 64),
-    Accent = Color3.fromRGB(168, 85, 247),
-    Text = Color3.fromRGB(236, 232, 248),
-    Sub = Color3.fromRGB(150, 144, 176),
-    Off = Color3.fromRGB(58, 54, 84),
-}
-
-local function new(class, props, parent)
-    local inst = Instance.new(class)
-    if props then
-        for k, v in pairs(props) do
-            inst[k] = v
-        end
-    end
-    if parent then
-        inst.Parent = parent
-    end
-    return inst
-end
-
-local function tween(inst, props, t)
-    local info = TweenInfo.new(t or 0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-    TweenService:Create(inst, info, props):Play()
-end
-
-local function corner(inst, r)
-    return new("UICorner", { CornerRadius = UDim.new(0, r or 6) }, inst)
-end
-
-local function randomName()
-    local ok, guid = pcall(function()
-        return HttpService:GenerateGUID(false)
-    end)
-    if ok and guid then
-        return guid
-    end
-    return tostring(math.random(100000, 999999)) .. tostring(os.clock())
-end
-
 local function mount(inst)
     local ok = pcall(function()
         local hui = gethui and gethui()
@@ -250,22 +210,27 @@ local function mount(inst)
     end
 end
 
-local screen = new("ScreenGui", {
-    Name = randomName(),
-    ResetOnSpawn = false,
-    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-    IgnoreGuiInset = true,
-    DisplayOrder = 999,
-})
-if syn and syn.protect_gui then
-    pcall(syn.protect_gui, screen)
+local function newGui(order)
+    local g = Instance.new("ScreenGui")
+    g.Name = randomName()
+    g.ResetOnSpawn = false
+    g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    g.IgnoreGuiInset = true
+    g.DisplayOrder = order
+    if syn and syn.protect_gui then
+        pcall(syn.protect_gui, g)
+    end
+    mount(g)
+    return track(g)
 end
-mount(screen)
-track(screen)
+
+local screen = newGui(999)
+local cursorGui = newGui(1000)
 
 -- Highlight / Billboard harus ada di dalam DataModel biar ke-render, jadi
 -- jangan ditaruh di container gethui() yang di beberapa executor ada di luar game.
-local espFolder = new("Folder", { Name = randomName() })
+local espFolder = Instance.new("Folder")
+espFolder.Name = randomName()
 do
     local ok = pcall(function()
         espFolder.Parent = CoreGui
@@ -276,655 +241,24 @@ do
 end
 track(espFolder)
 
-----------------------------------------------------------------------
--- Notifikasi (toast)
-----------------------------------------------------------------------
-local toastHolder = new("Frame", {
-    BackgroundTransparency = 1,
-    Size = UDim2.new(0, 280, 1, -20),
-    Position = UDim2.new(1, -290, 0, 10),
-}, screen)
-new("UIListLayout", {
-    Padding = UDim.new(0, 6),
-    SortOrder = Enum.SortOrder.LayoutOrder,
-    HorizontalAlignment = Enum.HorizontalAlignment.Right,
-}, toastHolder)
-
-local toastCount = 0
-local function notify(title, text, color, duration)
-    if not S.alive then
-        return
-    end
-    toastCount = toastCount + 1
-    local label = new("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 0),
-        AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundColor3 = Theme.Panel,
-        BorderSizePixel = 0,
-        RichText = true,
-        TextWrapped = true,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        TextYAlignment = Enum.TextYAlignment.Top,
-        Font = Enum.Font.Gotham,
-        TextSize = 13,
-        TextColor3 = Theme.Text,
-        LayoutOrder = toastCount,
-        Text = string.format("<b>%s</b>\n%s", esc(title), esc(text or "")),
-    }, toastHolder)
-    corner(label, 8)
-    new("UIPadding", {
-        PaddingTop = UDim.new(0, 8),
-        PaddingBottom = UDim.new(0, 8),
-        PaddingLeft = UDim.new(0, 10),
-        PaddingRight = UDim.new(0, 10),
-    }, label)
-    new("UIStroke", { Color = color or Theme.Accent, Thickness = 1.2, Transparency = 0.2 }, label)
-    -- Tumpukan toast dibatasi biar nggak menutupi layar.
-    local children = toastHolder:GetChildren()
-    local labels = {}
-    for _, c in ipairs(children) do
-        if c:IsA("TextLabel") then
-            labels[#labels + 1] = c
-        end
-    end
-    if #labels > 6 then
-        table.sort(labels, function(a, b)
-            return a.LayoutOrder < b.LayoutOrder
-        end)
-        for i = 1, #labels - 6 do
-            labels[i]:Destroy()
-        end
-    end
-    task.delay(duration or 4, function()
-        if label and label.Parent then
-            label:Destroy()
-        end
-    end)
-end
-
-local function report(title, ok, msg)
-    notify(title, msg or (ok and "Done" or "Failed"), ok and GOOD_COLOR or BAD_COLOR, ok and 3 or 4)
-end
-
-----------------------------------------------------------------------
--- Window
-----------------------------------------------------------------------
-local main = new("Frame", {
-    Name = "Main",
-    Size = UDim2.fromOffset(600, 420),
-    Position = UDim2.new(0.5, -300, 0.5, -210),
-    BackgroundColor3 = Theme.Bg,
-    BorderSizePixel = 0,
-    Active = true,
-}, screen)
-corner(main, 10)
-new("UIStroke", { Color = Theme.Accent, Thickness = 1.4, Transparency = 0.35 }, main)
-
-local titleBar = new("Frame", {
-    Size = UDim2.new(1, 0, 0, 36),
-    BackgroundColor3 = Theme.Panel,
-    BorderSizePixel = 0,
-}, main)
-corner(titleBar, 10)
-new("Frame", {
-    Size = UDim2.new(1, 0, 0, 10),
-    Position = UDim2.new(0, 0, 1, -10),
-    BackgroundColor3 = Theme.Panel,
-    BorderSizePixel = 0,
-}, titleBar)
-
-new("TextLabel", {
-    BackgroundTransparency = 1,
-    Position = UDim2.fromOffset(14, 0),
-    Size = UDim2.new(1, -60, 1, 0),
-    Font = Enum.Font.GothamBold,
-    TextSize = 16,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    RichText = true,
-    TextColor3 = Theme.Text,
-    Text = 'Noctis<font color="#a855f7">ENIX</font>  <font color="#968fb0" size="12">MAFIA V2.3 ACT II  |  v' .. Config.Version .. "</font>",
-}, titleBar)
-
-local closeBtn = new("TextButton", {
-    Size = UDim2.fromOffset(26, 22),
-    Position = UDim2.new(1, -34, 0.5, -11),
-    BackgroundColor3 = Theme.Elem,
-    BorderSizePixel = 0,
-    Text = "X",
-    Font = Enum.Font.GothamBold,
-    TextSize = 12,
-    TextColor3 = Theme.Text,
-    AutoButtonColor = false,
-}, titleBar)
-corner(closeBtn, 5)
-
-do
-    local dragging, dragStart, startPos = false, nil, nil
-    connect(titleBar.InputBegan, function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = main.Position
-        end
-    end)
-    connect(UserInputService.InputChanged, function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local delta = input.Position - dragStart
-            main.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + delta.X,
-                startPos.Y.Scale, startPos.Y.Offset + delta.Y
-            )
-        end
-    end)
-    connect(UserInputService.InputEnded, function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
-    end)
-end
-
-local tabBar = new("ScrollingFrame", {
-    Position = UDim2.fromOffset(8, 44),
-    Size = UDim2.new(0, 112, 1, -52),
-    BackgroundTransparency = 1,
-    BorderSizePixel = 0,
-    ScrollBarThickness = 0,
-    CanvasSize = UDim2.new(),
-    AutomaticCanvasSize = Enum.AutomaticSize.Y,
-}, main)
-new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, tabBar)
-
-local content = new("Frame", {
-    Position = UDim2.fromOffset(128, 44),
-    Size = UDim2.new(1, -136, 1, -52),
-    BackgroundColor3 = Theme.Panel,
-    BorderSizePixel = 0,
-}, main)
-corner(content, 8)
-
-----------------------------------------------------------------------
--- Komponen UI
-----------------------------------------------------------------------
-local UI = { tabs = {}, binds = {}, capturing = false, lastCapture = -1 }
-local orderCounter = setmetatable({}, { __mode = "k" })
-
-function UI.nextOrder(frame)
-    local n = (orderCounter[frame] or 0) + 1
-    orderCounter[frame] = n
-    return n
-end
-
-function UI.selectTab(target)
-    for _, t in ipairs(UI.tabs) do
-        local active = t == target
-        t.page.Visible = active
-        tween(t.button, {
-            BackgroundColor3 = active and Theme.Accent or Theme.Elem,
-            TextColor3 = active and Color3.new(1, 1, 1) or Theme.Sub,
-        })
-    end
-end
-
-function UI.tab(name)
-    local button = new("TextButton", {
-        Size = UDim2.new(1, 0, 0, 30),
-        BackgroundColor3 = Theme.Elem,
-        BorderSizePixel = 0,
-        Text = name,
-        Font = Enum.Font.GothamSemibold,
-        TextSize = 13,
-        TextColor3 = Theme.Sub,
-        AutoButtonColor = false,
-        LayoutOrder = #UI.tabs + 1,
-    }, tabBar)
-    corner(button, 6)
-
-    local page = new("ScrollingFrame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1,
-        BorderSizePixel = 0,
-        ScrollBarThickness = 4,
-        ScrollBarImageColor3 = Theme.Accent,
-        CanvasSize = UDim2.new(),
-        AutomaticCanvasSize = Enum.AutomaticSize.Y,
-        ScrollingDirection = Enum.ScrollingDirection.Y,
-        Visible = false,
-    }, content)
-    new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
-    new("UIPadding", {
-        PaddingTop = UDim.new(0, 8),
-        PaddingBottom = UDim.new(0, 8),
-        PaddingLeft = UDim.new(0, 8),
-        PaddingRight = UDim.new(0, 10),
-    }, page)
-
-    local tab = { name = name, button = button, page = page }
-    UI.tabs[#UI.tabs + 1] = tab
-    connect(button.MouseButton1Click, function()
-        UI.selectTab(tab)
-    end)
-    return page
-end
-
-function UI.row(page, height)
-    local row = new("Frame", {
-        Size = UDim2.new(1, 0, 0, height),
-        BackgroundColor3 = Theme.Elem,
-        BorderSizePixel = 0,
-        LayoutOrder = UI.nextOrder(page),
-    }, page)
-    corner(row, 6)
-    return row
-end
-
-function UI.section(page, text)
-    return new("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 20),
-        BackgroundTransparency = 1,
-        Font = Enum.Font.GothamBold,
-        TextSize = 12,
-        TextColor3 = Theme.Accent,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Text = string.upper(text),
-        LayoutOrder = UI.nextOrder(page),
-    }, page)
-end
-
-function UI.label(page, text)
-    return new("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 0),
-        AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
-        Font = Enum.Font.Gotham,
-        TextSize = 12,
-        TextColor3 = Theme.Sub,
-        TextWrapped = true,
-        RichText = true,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        TextYAlignment = Enum.TextYAlignment.Top,
-        Text = text,
-        LayoutOrder = UI.nextOrder(page),
-    }, page)
-end
-
--- Tombol kecil buat keybind. Klik lalu tekan tombol; Escape / Backspace = hapus.
-function UI.keyButton(parent, position, bind)
-    local kb = new("TextButton", {
-        Size = UDim2.fromOffset(58, 20),
-        Position = position,
-        BackgroundColor3 = Theme.Off,
-        BorderSizePixel = 0,
-        Font = Enum.Font.GothamSemibold,
-        TextSize = 11,
-        TextColor3 = Theme.Text,
-        Text = bind.key and bind.key.Name or "NONE",
-        AutoButtonColor = false,
-        ZIndex = 3,
-    }, parent)
-    corner(kb, 4)
-    connect(kb.MouseButton1Click, function()
-        if UI.capturing then
-            return
-        end
-        UI.capturing = true
-        kb.Text = "..."
-        local conn
-        conn = UserInputService.InputBegan:Connect(function(input)
-            if input.UserInputType ~= Enum.UserInputType.Keyboard then
-                return
-            end
-            if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Backspace then
-                bind.key = nil
-            else
-                bind.key = input.KeyCode
-            end
-            kb.Text = bind.key and bind.key.Name or "NONE"
-            conn:Disconnect()
-            UI.capturing = false
-            UI.lastCapture = os.clock()
-        end)
-        track(conn)
-    end)
-    return kb
-end
-
-function UI.bind(fire)
-    local bind = { key = nil, fire = fire }
-    UI.binds[#UI.binds + 1] = bind
-    return bind
-end
-
--- opts.bind = true -> tombol keybind yang men-toggle.
-function UI.toggle(page, text, default, callback, opts)
-    local row = UI.row(page, 30)
-    local hasBind = opts and opts.bind
-    new("TextLabel", {
-        BackgroundTransparency = 1,
-        Position = UDim2.fromOffset(10, 0),
-        Size = UDim2.new(1, hasBind and -130 or -64, 1, 0),
-        Font = Enum.Font.Gotham,
-        TextSize = 13,
-        TextColor3 = Theme.Text,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        TextTruncate = Enum.TextTruncate.AtEnd,
-        Text = text,
-    }, row)
-    local trackFrame = new("Frame", {
-        Size = UDim2.fromOffset(36, 18),
-        Position = UDim2.new(1, -46, 0.5, -9),
-        BackgroundColor3 = Theme.Off,
-        BorderSizePixel = 0,
-    }, row)
-    corner(trackFrame, 9)
-    local knob = new("Frame", {
-        Size = UDim2.fromOffset(14, 14),
-        Position = UDim2.fromOffset(2, 2),
-        BackgroundColor3 = Color3.new(1, 1, 1),
-        BorderSizePixel = 0,
-    }, trackFrame)
-    corner(knob, 7)
-    local hit = new("TextButton", {
-        Size = UDim2.fromScale(1, 1),
-        BackgroundTransparency = 1,
-        Text = "",
-    }, row)
-
-    local state = default and true or false
-    local api = {}
-    local function render()
-        tween(trackFrame, { BackgroundColor3 = state and Theme.Accent or Theme.Off })
-        tween(knob, { Position = state and UDim2.fromOffset(20, 2) or UDim2.fromOffset(2, 2) })
-    end
-    function api.Set(value, silent)
-        state = value and true or false
-        render()
-        if not silent and callback then
-            task.spawn(safe, callback, state)
-        end
-    end
-    function api.Get()
-        return state
-    end
-    connect(hit.MouseButton1Click, function()
-        api.Set(not state)
-    end)
-    if hasBind then
-        api.bind = UI.bind(function()
-            api.Set(not state)
-        end)
-        UI.keyButton(row, UDim2.new(1, -112, 0.5, -10), api.bind)
-    end
-    render()
-    return api
-end
-
--- opts.bind = true -> tombol keybind yang menjalankan callback.
-function UI.button(page, text, callback, opts)
-    local hasBind = opts and opts.bind
-    local holder = page
-    local btnParent = page
-    local btnSize = UDim2.new(1, 0, 0, 30)
-    local btnPos = nil
-    local holderFrame
-    if hasBind then
-        holderFrame = new("Frame", {
-            Size = UDim2.new(1, 0, 0, 30),
-            BackgroundTransparency = 1,
-            LayoutOrder = UI.nextOrder(page),
-        }, page)
-        holder = holderFrame
-        btnParent = holderFrame
-        btnSize = UDim2.new(1, -66, 1, 0)
-        btnPos = UDim2.fromOffset(0, 0)
-    end
-    local btn = new("TextButton", {
-        Size = btnSize,
-        Position = btnPos or UDim2.new(),
-        BackgroundColor3 = Theme.Elem,
-        BorderSizePixel = 0,
-        Font = Enum.Font.GothamSemibold,
-        TextSize = 13,
-        TextColor3 = Theme.Text,
-        Text = text,
-        AutoButtonColor = false,
-        LayoutOrder = hasBind and 0 or UI.nextOrder(page),
-    }, btnParent)
-    corner(btn, 6)
-    connect(btn.MouseEnter, function()
-        tween(btn, { BackgroundColor3 = Theme.ElemHover })
-    end)
-    connect(btn.MouseLeave, function()
-        tween(btn, { BackgroundColor3 = Theme.Elem })
-    end)
-    connect(btn.MouseButton1Click, function()
-        task.spawn(safe, callback)
-    end)
-    if hasBind then
-        local bind = UI.bind(function()
-            task.spawn(safe, callback)
-        end)
-        UI.keyButton(holder, UDim2.new(1, -60, 0.5, -10), bind)
-        return btn, bind
-    end
-    return btn
-end
-
-function UI.slider(page, text, min, max, default, callback, decimals)
-    local row = UI.row(page, 46)
-    new("TextLabel", {
-        BackgroundTransparency = 1,
-        Position = UDim2.fromOffset(10, 3),
-        Size = UDim2.new(1, -80, 0, 18),
-        Font = Enum.Font.Gotham,
-        TextSize = 13,
-        TextColor3 = Theme.Text,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Text = text,
-    }, row)
-    local valueLabel = new("TextLabel", {
-        BackgroundTransparency = 1,
-        Position = UDim2.new(1, -70, 0, 3),
-        Size = UDim2.fromOffset(60, 18),
-        Font = Enum.Font.GothamBold,
-        TextSize = 13,
-        TextColor3 = Theme.Accent,
-        TextXAlignment = Enum.TextXAlignment.Right,
-        Text = tostring(default),
-    }, row)
-    local bar = new("Frame", {
-        Position = UDim2.new(0, 10, 1, -15),
-        Size = UDim2.new(1, -20, 0, 6),
-        BackgroundColor3 = Theme.Off,
-        BorderSizePixel = 0,
-    }, row)
-    corner(bar, 3)
-    local fill = new("Frame", {
-        Size = UDim2.new((default - min) / (max - min), 0, 1, 0),
-        BackgroundColor3 = Theme.Accent,
-        BorderSizePixel = 0,
-    }, bar)
-    corner(fill, 3)
-    local hit = new("TextButton", {
-        Position = UDim2.new(0, 0, 1, -26),
-        Size = UDim2.new(1, 0, 0, 26),
-        BackgroundTransparency = 1,
-        Text = "",
-    }, row)
-
-    local dragging = false
-    local value = default
-    local function apply(v)
-        value = v
-        fill.Size = UDim2.new((v - min) / (max - min), 0, 1, 0)
-        valueLabel.Text = tostring(v)
-        if callback then
-            callback(v)
-        end
-    end
-    local function fromX(x)
-        local rel = math.clamp((x - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1), 0, 1)
-        local v = min + (max - min) * rel
-        if decimals and decimals > 0 then
-            v = tonumber(string.format("%." .. decimals .. "f", v))
-        else
-            v = math.floor(v + 0.5)
-        end
-        if v ~= value then
-            apply(v)
-        end
-    end
-    connect(hit.InputBegan, function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            fromX(input.Position.X)
-        end
-    end)
-    connect(UserInputService.InputChanged, function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            fromX(input.Position.X)
-        end
-    end)
-    connect(UserInputService.InputEnded, function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
-    end)
-end
-
--- Dropdown: getOptions() -> { {label=, value=}, ... }, dipanggil tiap dibuka.
-function UI.dropdown(page, text, getOptions, onSelect)
-    local row = UI.row(page, 30)
-    new("TextLabel", {
-        BackgroundTransparency = 1,
-        Position = UDim2.fromOffset(10, 0),
-        Size = UDim2.new(0.4, -10, 1, 0),
-        Font = Enum.Font.Gotham,
-        TextSize = 13,
-        TextColor3 = Theme.Text,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Text = text,
-    }, row)
-    local valueBtn = new("TextButton", {
-        Position = UDim2.new(0.4, 0, 0.5, -11),
-        Size = UDim2.new(0.6, -8, 0, 22),
-        BackgroundColor3 = Theme.Off,
-        BorderSizePixel = 0,
-        Font = Enum.Font.GothamSemibold,
-        TextSize = 12,
-        TextColor3 = Theme.Text,
-        TextTruncate = Enum.TextTruncate.AtEnd,
-        Text = "None  v",
-        AutoButtonColor = false,
-    }, row)
-    corner(valueBtn, 5)
-    local list = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 0),
-        AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
-        Visible = false,
-        LayoutOrder = UI.nextOrder(page),
-    }, page)
-    new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, list)
-
-    local api = {}
-    function api.SetLabel(label)
-        valueBtn.Text = tostring(label) .. "  v"
-    end
-    local function close()
-        list.Visible = false
-        for _, c in ipairs(list:GetChildren()) do
-            if c:IsA("TextButton") then
-                c:Destroy()
-            end
-        end
-    end
-    connect(valueBtn.MouseButton1Click, function()
-        if list.Visible then
-            close()
-            return
-        end
-        local ok, options = pcall(getOptions)
-        if not ok or type(options) ~= "table" then
-            options = {}
-        end
-        if #options == 0 then
-            options = { { label = "(nobody)", value = nil, empty = true } }
-        end
-        for i, opt in ipairs(options) do
-            local ob = new("TextButton", {
-                Size = UDim2.new(1, 0, 0, 24),
-                BackgroundColor3 = Theme.Elem,
-                BorderSizePixel = 0,
-                Font = Enum.Font.Gotham,
-                TextSize = 12,
-                TextColor3 = opt.color or Theme.Text,
-                Text = opt.label,
-                AutoButtonColor = true,
-                LayoutOrder = i,
-            }, list)
-            corner(ob, 5)
-            connect(ob.MouseButton1Click, function()
-                close()
-                if not opt.empty then
-                    api.SetLabel(opt.label)
-                    task.spawn(safe, onSelect, opt.value)
-                end
-            end)
-        end
-        list.Visible = true
-    end)
-    return api
-end
-
--- Daftar baris teks (feed). api.Set({ {text=, color=}, ... }).
-function UI.feed(page, maxLines)
-    local holder = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 0),
-        AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundColor3 = Theme.Elem,
-        BorderSizePixel = 0,
-        LayoutOrder = UI.nextOrder(page),
-    }, page)
-    corner(holder, 6)
-    new("UIPadding", {
-        PaddingTop = UDim.new(0, 6),
-        PaddingBottom = UDim.new(0, 6),
-        PaddingLeft = UDim.new(0, 8),
-        PaddingRight = UDim.new(0, 8),
-    }, holder)
-    new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }, holder)
-    local lines = {}
-    for i = 1, maxLines do
-        lines[i] = new("TextLabel", {
-            Size = UDim2.new(1, 0, 0, 0),
-            AutomaticSize = Enum.AutomaticSize.Y,
-            BackgroundTransparency = 1,
-            Font = Enum.Font.Gotham,
-            TextSize = 12,
-            TextWrapped = true,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            TextColor3 = Theme.Sub,
-            Text = "",
-            Visible = false,
-            LayoutOrder = i,
-        }, holder)
-    end
-    local api = {}
-    function api.Set(items)
-        for i = 1, maxLines do
-            local item = items[i]
-            local l = lines[i]
-            if item then
-                l.Text = item.text
-                l.TextColor3 = item.color or Theme.Sub
-                l.Visible = true
-            else
-                l.Visible = false
-            end
-        end
-    end
-    return api
-end
+local UI = (function()
+--@@INCLUDE modules/ui.lua@@
+end)()({
+    screen = screen,
+    cursorGui = cursorGui,
+    connect = connect,
+    track = track,
+    safe = safe,
+    safeOnce = safeOnce,
+    UserInputService = UserInputService,
+    RunService = RunService,
+    TweenService = TweenService,
+    LocalPlayer = LocalPlayer,
+    Config = Config,
+    S = S,
+})
+local new, esc, hex, Theme = UI.new, UI.esc, UI.hex, UI.Theme
+local notify, report = UI.notify, UI.report
 
 ----------------------------------------------------------------------
 -- Modul (GameAPI, Intel, Actions)
@@ -977,6 +311,9 @@ end)()(ctx)
 local function intelInfo(p)
     local ok, info = pcall(Intel.info, p)
     if ok and type(info) == "table" then
+        if type(info.status) ~= "table" then
+            info.status = {}
+        end
         return info
     end
     return { status = {} }
@@ -998,30 +335,47 @@ function ESP.ensure(player)
     end
     o = {}
     o.hl = new("Highlight", {
-        FillTransparency = 0.65,
+        FillTransparency = 0.7,
         OutlineTransparency = 0,
         DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
         Enabled = false,
     }, espFolder)
     o.bb = new("BillboardGui", {
-        Size = UDim2.fromOffset(200, 70),
-        StudsOffset = Vector3.new(0, 3.2, 0),
+        Size = UDim2.fromOffset(260, 110),
+        StudsOffset = Vector3.new(0, 3.4, 0),
         AlwaysOnTop = true,
         LightInfluence = 0,
         ResetOnSpawn = false,
         Enabled = false,
     }, espFolder)
+    -- Panel gelap di belakang teks biar tetap kebaca di map yang terang.
     o.tx = new("TextLabel", {
-        BackgroundTransparency = 1,
-        Size = UDim2.fromScale(1, 1),
+        AnchorPoint = Vector2.new(0.5, 1),
+        Position = UDim2.new(0.5, 0, 1, 0),
+        Size = UDim2.new(0, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.XY,
+        BackgroundColor3 = Color3.fromRGB(10, 9, 16),
+        BackgroundTransparency = 0.3,
+        BorderSizePixel = 0,
         Font = Enum.Font.GothamBold,
         TextSize = 13,
         RichText = true,
-        TextStrokeTransparency = 0.4,
+        TextStrokeTransparency = 0.7,
         TextColor3 = Color3.new(1, 1, 1),
-        TextYAlignment = Enum.TextYAlignment.Bottom,
-        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Center,
     }, o.bb)
+    new("UICorner", { CornerRadius = UDim.new(0, 6) }, o.tx)
+    new("UIPadding", {
+        PaddingTop = UDim.new(0, 3),
+        PaddingBottom = UDim.new(0, 3),
+        PaddingLeft = UDim.new(0, 7),
+        PaddingRight = UDim.new(0, 7),
+    }, o.tx)
+    o.stroke = new("UIStroke", {
+        Thickness = 1,
+        Transparency = 0.35,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, o.tx)
     ESP.objs[player] = o
     return o
 end
@@ -1049,10 +403,6 @@ function ESP.clear()
     for p in pairs(ESP.objs) do
         ESP.remove(p)
     end
-end
-
-local function hex(c)
-    return string.format("#%02X%02X%02X", math.floor(c.R * 255), math.floor(c.G * 255), math.floor(c.B * 255))
 end
 
 function ESP.statusTags(status)
@@ -1090,7 +440,7 @@ function ESP.step()
 
             if S.esp and char and root and hum and hum.Health > 0 then
                 local info = intelInfo(p)
-                local status = info.status or {}
+                local status = info.status
                 local team = infoTeam(info)
                 local color = teamColor(team)
                 local o = ESP.ensure(p)
@@ -1098,33 +448,33 @@ function ESP.step()
                 o.hl.Adornee = char
                 o.hl.FillColor = color
                 o.hl.OutlineColor = color
-                o.hl.FillTransparency = (status.downed and blink) and 0.25 or 0.65
+                o.hl.FillTransparency = (status.downed and blink) and 0.25 or 0.7
                 o.hl.Enabled = S.espHighlight
 
                 local lines = {}
                 if S.espRoles and team then
-                    lines[#lines + 1] = string.format('<font color="%s" size="11">%s TEAM</font>', hex(color), team)
+                    lines[#lines + 1] = string.format('<font color="%s" size="10">%s TEAM</font>', hex(color), team)
                 end
                 if S.espNames then
                     local name = esc(p.DisplayName)
                     if info.disguise then
-                        name = esc(info.disguise) .. ' <font size="11">(@' .. esc(p.Name) .. ")</font>"
+                        name = esc(info.disguise) .. ' <font size="10" color="#BBBBCC">@' .. esc(p.Name) .. "</font>"
                     end
                     lines[#lines + 1] = name
                 end
                 if S.espRoles and info.role then
                     local mark = ""
                     if info.confidence == "likely" then
-                        mark = "?"
+                        mark = " ?"
                     elseif info.confidence == "suspect" then
-                        mark = "??"
+                        mark = " ??"
                     end
                     lines[#lines + 1] = string.format('<font color="%s">[%s%s]</font>', hex(color), esc(string.upper(info.role)), mark)
                 end
                 local extra = {}
                 if S.espStatus then
                     for _, tag in ipairs(ESP.statusTags(status)) do
-                        extra[#extra + 1] = tag
+                        extra[#extra + 1] = '<font color="#FFB84E">' .. tag .. "</font>"
                     end
                 end
                 if S.espDistance and origin then
@@ -1134,13 +484,13 @@ function ESP.step()
                     extra[#extra + 1] = string.format("%dHP", math.floor(hum.Health))
                 end
                 if #extra > 0 then
-                    lines[#lines + 1] = '<font size="11">' .. table.concat(extra, "  ") .. "</font>"
+                    lines[#lines + 1] = '<font size="10" color="#CFCBE0">' .. table.concat(extra, "  ") .. "</font>"
                 end
 
                 o.bb.Adornee = head or root
                 o.bb.Enabled = #lines > 0
                 o.tx.Text = table.concat(lines, "\n")
-                o.tx.TextColor3 = (info.role or team) and color or Color3.new(1, 1, 1)
+                o.stroke.Color = color
             else
                 ESP.hide(p)
             end
@@ -1349,7 +699,7 @@ function View.start(player)
         View.player = player
         notify("Spectate", "Viewing " .. player.DisplayName, nil, 2)
     else
-        notify("Spectate", player.DisplayName .. " has no character", nil, 2)
+        notify("Spectate", player.DisplayName .. " has no character", Theme.Bad, 2)
     end
 end
 
@@ -1358,7 +708,7 @@ function View.teleportTo(player)
     if me and them then
         me.CFrame = them.CFrame * CFrame.new(0, 0, 3)
     else
-        notify("Teleport", "Target is not available", nil, 2)
+        notify("Teleport", "Target is not available", Theme.Bad, 2)
     end
 end
 
@@ -1509,154 +859,161 @@ function Dev.dumpAllPlayers()
 end
 
 ----------------------------------------------------------------------
--- Tabs
+-- Halaman
 ----------------------------------------------------------------------
-local Pages = {
-    esp = UI.tab("ESP"),
-    roles = UI.tab("Roles"),
-    deception = UI.tab("Deception"),
-    teleport = UI.tab("Teleport"),
-    player = UI.tab("Player"),
-    players = UI.tab("Players"),
-    world = UI.tab("World"),
-    dev = UI.tab("Dev Tools"),
-    settings = UI.tab("Settings"),
-}
+UI.group("Intel")
+local Pages = {}
+Pages.esp = UI.tab("Visuals", "👁", "See every player through walls, colored by team")
+Pages.roles = UI.tab("Roles", "🕵", "Role detection, evidence and votes")
+UI.group("Player")
+Pages.deception = UI.tab("Deception", "🎭", "Look like something you are not")
+Pages.player = UI.tab("Player", "🏃", "Movement and camera")
+UI.group("Tools")
+Pages.teleport = UI.tab("Teleport", "📍", "Teleports and Mafia / Doctor tools")
+Pages.players = UI.tab("Players", "👥", "Everyone in the server")
+Pages.world = UI.tab("World", "🌙", "Lighting and interaction")
+UI.group("Other")
+Pages.dev = UI.tab("Dev Tools", "🛠", "Calibration helpers")
+Pages.settings = UI.tab("Settings", "⚙", "Menu, cursor and session")
 
--- ESP ---------------------------------------------------------------
+-- Visuals ------------------------------------------------------------
 UI.section(Pages.esp, "Player ESP")
-UI.toggle(Pages.esp, "Enable ESP", S.esp, function(v)
+UI.toggle(Pages.esp, "Enable ESP", "Highlights every living player through walls. Red is Evil, gold is the Veil, green is Town, white is not figured out yet.", S.esp, function(v)
     S.esp = v
     if not v then
         ESP.clear()
     end
-end)
-UI.toggle(Pages.esp, "Highlight (team color)", S.espHighlight, function(v)
+end, { bind = true, risk = "local" })
+UI.toggle(Pages.esp, "Highlight", "Colored outline and fill on the body.", S.espHighlight, function(v)
     S.espHighlight = v
 end)
-UI.toggle(Pages.esp, "Name (+ real name behind disguise)", S.espNames, function(v)
+UI.toggle(Pages.esp, "Names", "Shows the disguise name plus the real @username behind it.", S.espNames, function(v)
     S.espNames = v
 end)
-UI.toggle(Pages.esp, "Team + role tag", S.espRoles, function(v)
+UI.toggle(Pages.esp, "Team and role tags", 'EVIL TEAM / [MAFIA] style tags. "?" means likely, "??" means suspected.', S.espRoles, function(v)
     S.espRoles = v
 end)
-UI.toggle(Pages.esp, "Status (downed, detained, silenced, locker)", S.espStatus, function(v)
+UI.toggle(Pages.esp, "Status tags", "DOWNED, DETAINED, SILENCED, IN LOCKER, POISONED. Downed players also blink.", S.espStatus, function(v)
     S.espStatus = v
 end)
-UI.toggle(Pages.esp, "Distance", S.espDistance, function(v)
+UI.toggle(Pages.esp, "Distance", nil, S.espDistance, function(v)
     S.espDistance = v
 end)
-UI.toggle(Pages.esp, "Health", S.espHealth, function(v)
+UI.toggle(Pages.esp, "Health", nil, S.espHealth, function(v)
     S.espHealth = v
 end)
-UI.label(Pages.esp, '<font color="#FF4040">Merah = Evil</font>, <font color="#FFC440">emas = Veil</font>, <font color="#50E678">hijau = Town</font>, putih = belum ketahuan. "?" = kemungkinan, "??" = curiga. Pemain DOWNED berkedip.')
 
--- Roles -------------------------------------------------------------
+-- Roles --------------------------------------------------------------
 UI.section(Pages.roles, "You")
-local selfRoleLabel = UI.label(Pages.roles, "Your role: scanning...")
-local configLabel = UI.label(Pages.roles, "Game config: checking...")
+local selfFeed = UI.feed(Pages.roles, "Your role", 2)
 UI.section(Pages.roles, "Detection")
-UI.toggle(Pages.roles, "Notify when a role is found", S.notifyRoles, function(v)
+UI.toggle(Pages.roles, "Notify on detection", "Pops a notification the moment someone's role is figured out, and what gave them away.", S.notifyRoles, function(v)
     S.notifyRoles = v
 end)
-UI.toggle(Pages.roles, "Alert when someone votes for you", S.voteAlert, function(v)
+UI.toggle(Pages.roles, "Alert when voted", "Warns you the moment someone votes for you.", S.voteAlert, function(v)
     S.voteAlert = v
 end)
-UI.button(Pages.roles, "Reset round evidence", function()
+UI.button(Pages.roles, "Reset round evidence", "Clears everything learned this round. Happens automatically when a new round starts.", function()
     pcall(Intel.reset, "manual")
     notify("Roles", "Evidence cleared", nil, 2)
-end)
+end, { action = "Reset" })
 UI.section(Pages.roles, "Known roles")
-local knownFeed = UI.feed(Pages.roles, 16)
-UI.section(Pages.roles, "Kill feed + evidence")
-local evidenceFeed = UI.feed(Pages.roles, 12)
-UI.label(Pages.roles, "Role orang lain disimpulkan dari bukti: tusukan / tembakan malam (Mafia), tembakan siang (Vigilante), silence (Witch), kunci pintu / banana (Saboteur), buka pintu / bersih-bersih (Janitor), heal (Doctor), tebakan Harbinger, tag tim, dan pengumuman kematian.")
+local knownFeed = UI.feed(Pages.roles, "Figured out so far", 16, "Nobody yet. Evidence shows up as things happen in the round.")
+UI.section(Pages.roles, "Kill feed and evidence")
+local evidenceFeed = UI.feed(Pages.roles, "Latest first", 12, "Nothing happened yet.")
+UI.note(Pages.roles, "Other players' roles are never sent to your client, so they are deduced: stabs or shots at night (Mafia), shots by day (Vigilante), silences (Witch), locked doors and bananas (Saboteur), unlocked doors and cleanups (Janitor), revives and cures (Doctor), Harbinger calls, team tags and death announcements.")
 
 -- Deception ----------------------------------------------------------
 UI.section(Pages.deception, "Your body")
 local crawlToggle
-crawlToggle = UI.toggle(Pages.deception, "Fake crawl", false, function(v)
+crawlToggle = UI.toggle(Pages.deception, "Fake crawl", "Everyone sees you crawling around wounded while you are actually fine. You move at a wounded crawl so it looks real.", false, function(v)
     local ok, msg = Actions.setFakeCrawl(v)
     if v and not ok then
         crawlToggle.Set(false, true)
     end
     report("Fake crawl", ok, msg)
-end, { bind = true })
-UI.toggle(Pages.deception, "Keep extra speed while crawling", S.crawlKeepSpeed, function(v)
+end, { bind = true, risk = "visible" })
+UI.toggle(Pages.deception, "Keep speed while crawling", "Keeps your normal speed while crawling, real or fake.", S.crawlKeepSpeed, function(v)
     S.crawlKeepSpeed = v
 end)
-UI.button(Pages.deception, "Fake stab", function()
+UI.button(Pages.deception, "Fake stab", "Makes you look like you just stabbed someone, so others think you are the Mafia. Works best in the dark or from a distance.", function()
     report("Fake stab", Actions.fakeStab())
-end, { bind = true })
-UI.button(Pages.deception, "Fake gunshot", function()
+end, { bind = true, risk = "visible", action = "Play" })
+UI.button(Pages.deception, "Fake gunshot", "Makes you look like you just fired the Mafia's gun. Works best in the dark or from a distance.", function()
     report("Fake gunshot", Actions.fakeShot())
-end, { bind = true })
+end, { bind = true, risk = "visible", action = "Play" })
 local ghostToggle
-ghostToggle = UI.toggle(Pages.deception, "Ghost (others see you under the map)", false, function(v)
+ghostToggle = UI.toggle(Pages.deception, "Ghost", "Everyone else sees you hidden under the map while you walk around normally, so nobody can stab you. You cannot stab, heal, interact or use abilities while it is on.", false, function(v)
     local ok, msg = Actions.setGhost(v)
     if v and not ok then
         ghostToggle.Set(false, true)
     end
     report("Ghost", ok, msg)
-end, { bind = true })
-UI.slider(Pages.deception, "Ghost depth (studs)", 20, 120, S.ghostDepth, function(v)
+end, { bind = true, risk = "server" })
+UI.slider(Pages.deception, "Ghost depth", "How far under the map others see you, in studs.", 20, 120, S.ghostDepth, function(v)
     S.ghostDepth = v
 end)
-UI.label(Pages.deception, "Fake crawl / stab / gunshot memutar animasi game di karakter kamu, dan animasi itu terlihat pemain lain. Ghost: kamu nggak bisa tusuk, heal, interact, atau pakai ability selama aktif.")
 
 -- Teleport -----------------------------------------------------------
-UI.section(Pages.teleport, "Target")
 local function targetLabel(p)
     if not p then
         return "None"
     end
-    return p.DisplayName .. " (@" .. p.Name .. ")"
+    return p.DisplayName .. "  @" .. p.Name
 end
-local targetDropdown = UI.dropdown(Pages.teleport, "Target", function()
+
+UI.section(Pages.teleport, "Target")
+local targetDropdown = UI.dropdown(Pages.teleport, "Target", "Choose which living player to teleport to.", function()
     local options = {}
     local ok, list = pcall(Actions.livingPlayers)
     if ok and type(list) == "table" then
         for _, p in ipairs(list) do
             local info = intelInfo(p)
-            options[#options + 1] = { label = targetLabel(p), value = p, color = teamColor(infoTeam(info)) }
+            local label = targetLabel(p)
+            if info.role then
+                label = label .. "  [" .. info.role .. "]"
+            end
+            options[#options + 1] = { label = label, value = p, color = teamColor(infoTeam(info)) }
         end
     end
     return options
 end, function(p)
     Actions.setTarget(p)
 end)
-UI.button(Pages.teleport, "To target", function()
+UI.button(Pages.teleport, "To target", "Teleports you next to your target.", function()
     report("Teleport", Actions.toTarget())
-end)
-UI.button(Pages.teleport, "To downed", function()
+end, { risk = "server", action = "Go" })
+UI.button(Pages.teleport, "To downed", "Teleports you to the nearest downed player.", function()
     report("Teleport", Actions.toDowned())
-end)
-UI.button(Pages.teleport, "To detained", function()
+end, { risk = "server", action = "Go" })
+UI.button(Pages.teleport, "To detained", "Teleports you to the nearest detained player.", function()
     report("Teleport", Actions.toDetained())
-end)
+end, { risk = "server", action = "Go" })
+
 UI.section(Pages.teleport, "Mafia")
-UI.button(Pages.teleport, "Teleport-Stab-Return", function()
+UI.button(Pages.teleport, "Teleport-Stab-Return", "Teleports you to your target, stabs them and brings you right back. Mafia only.", function()
     report("Teleport-Stab-Return", Actions.tpStabReturn())
-end, { bind = true })
-UI.slider(Pages.teleport, "Time at target before return (s)", 0.15, 1.5, S.tsrHold, function(v)
+end, { bind = true, risk = "server", action = "Strike" })
+UI.slider(Pages.teleport, "Time at target", "Seconds spent next to the target before returning.", 0.15, 1.5, S.tsrHold, function(v)
     S.tsrHold = v
 end, 2)
 local bringToggle
-bringToggle = UI.toggle(Pages.teleport, "Bring target (only you see them move)", false, function(v)
+bringToggle = UI.toggle(Pages.teleport, "Bring target", "Brings your target right in front of you so you can line up a shot. Only you see them move.", false, function(v)
     local ok, msg = Actions.setBring(v)
     if v and not ok then
         bringToggle.Set(false, true)
     end
     report("Bring target", ok, msg)
-end, { bind = true })
+end, { bind = true, risk = "local" })
+
 UI.section(Pages.teleport, "Doctor")
-UI.button(Pages.teleport, "Teleport-Heal-Return", function()
+UI.button(Pages.teleport, "Teleport-Heal-Return", "Teleports you to whoever is down, saves them and brings you right back. Doctor only.", function()
     report("Teleport-Heal-Return", Actions.tpHealReturn())
-end, { bind = true })
+end, { bind = true, risk = "server", action = "Save" })
 
 -- Player -------------------------------------------------------------
 UI.section(Pages.player, "Movement")
-UI.toggle(Pages.player, "Walk speed", false, function(v)
+UI.toggle(Pages.player, "Walk speed", "Move faster than everyone else.", false, function(v)
     local hum = getHum(LocalPlayer)
     if v then
         Move.baseSpeed = hum and hum.WalkSpeed or 16
@@ -1664,11 +1021,11 @@ UI.toggle(Pages.player, "Walk speed", false, function(v)
         hum.WalkSpeed = Move.baseSpeed
     end
     S.speedOn = v
-end)
-UI.slider(Pages.player, "Speed value", 16, 150, S.speed, function(v)
+end, { bind = true, risk = "server" })
+UI.slider(Pages.player, "Speed", nil, 16, 150, S.speed, function(v)
     S.speed = v
 end)
-UI.toggle(Pages.player, "Jump power", false, function(v)
+UI.toggle(Pages.player, "Jump power", nil, false, function(v)
     local hum = getHum(LocalPlayer)
     if v then
         Move.baseJump = hum and hum.JumpPower or 50
@@ -1676,28 +1033,28 @@ UI.toggle(Pages.player, "Jump power", false, function(v)
         hum.JumpPower = Move.baseJump
     end
     S.jumpOn = v
-end)
-UI.slider(Pages.player, "Jump value", 50, 250, S.jump, function(v)
+end, { risk = "server" })
+UI.slider(Pages.player, "Jump", nil, 50, 250, S.jump, function(v)
     S.jump = v
 end)
-UI.toggle(Pages.player, "Infinite jump", false, function(v)
+UI.toggle(Pages.player, "Infinite jump", nil, false, function(v)
     S.infJump = v
-end)
-UI.toggle(Pages.player, "Noclip", false, function(v)
+end, { risk = "server" })
+UI.toggle(Pages.player, "Noclip", "Walk straight through walls and doors. Anyone watching will see you pass through them.", false, function(v)
     S.noclip = v
-end, { bind = true })
-UI.section(Pages.player, "Fly (W A S D, Space naik, Ctrl turun)")
-UI.toggle(Pages.player, "Fly", false, function(v)
+end, { bind = true, risk = "server" })
+UI.section(Pages.player, "Fly")
+UI.toggle(Pages.player, "Fly", "W A S D to move, Space up, Ctrl down.", false, function(v)
     S.fly = v
     if not v then
         Move.stopFly()
     end
-end, { bind = true })
-UI.slider(Pages.player, "Fly speed", 20, 200, S.flySpeed, function(v)
+end, { bind = true, risk = "server" })
+UI.slider(Pages.player, "Fly speed", nil, 20, 200, S.flySpeed, function(v)
     S.flySpeed = v
 end)
 UI.section(Pages.player, "Camera")
-UI.toggle(Pages.player, "Custom FOV", false, function(v)
+UI.toggle(Pages.player, "Custom FOV", nil, false, function(v)
     local cam = getCamera()
     if v then
         Move.baseFov = cam and cam.FieldOfView or 70
@@ -1705,75 +1062,60 @@ UI.toggle(Pages.player, "Custom FOV", false, function(v)
         cam.FieldOfView = Move.baseFov
     end
     S.fovOn = v
-end)
-UI.slider(Pages.player, "FOV value", 40, 120, S.fov, function(v)
+end, { risk = "local" })
+UI.slider(Pages.player, "FOV", nil, 40, 120, S.fov, function(v)
     S.fov = v
 end)
 
 -- Players ------------------------------------------------------------
 UI.section(Pages.players, "Player list")
 local listHolder = new("Frame", {
+    Name = "PlayerList",
     Size = UDim2.new(1, 0, 0, 0),
     AutomaticSize = Enum.AutomaticSize.Y,
     BackgroundTransparency = 1,
     LayoutOrder = UI.nextOrder(Pages.players),
 }, Pages.players)
-new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, listHolder)
-UI.button(Pages.players, "Stop spectating", View.stop)
+new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, listHolder)
+UI.button(Pages.players, "Stop spectating", "Puts the camera back on your own character.", View.stop, { action = "Stop" })
 
-local PlayerRows = {}
+local PlayerRows = { rows = {} }
 
-local function smallButton(text, x, parent)
+local function pillButton(name, label, parent, order)
     local b = new("TextButton", {
-        Size = UDim2.fromOffset(44, 22),
-        Position = UDim2.new(1, x, 0.5, -11),
-        BackgroundColor3 = Theme.Off,
+        Name = name,
+        Size = UDim2.fromOffset(52, 26),
+        BackgroundColor3 = Theme.Chip,
         BorderSizePixel = 0,
-        Font = Enum.Font.GothamSemibold,
-        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
         TextColor3 = Theme.Text,
-        Text = text,
+        Text = label,
         AutoButtonColor = false,
+        LayoutOrder = order,
+        ZIndex = 4,
     }, parent)
-    corner(b, 5)
+    new("UICorner", { CornerRadius = UDim.new(0, 7) }, b)
+    connect(b.MouseEnter, function()
+        UI.tween(b, { BackgroundColor3 = Theme.Accent })
+    end)
+    connect(b.MouseLeave, function()
+        UI.tween(b, { BackgroundColor3 = Theme.Chip })
+    end)
     return b
 end
 
 function PlayerRows.add(p)
-    if PlayerRows[p] then
+    if PlayerRows.rows[p] then
         return
     end
-    local row = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 32),
-        BackgroundColor3 = Theme.Elem,
-        BorderSizePixel = 0,
-        LayoutOrder = #listHolder:GetChildren(),
-    }, listHolder)
-    corner(row, 6)
-    local nameLabel = new("TextLabel", {
-        BackgroundTransparency = 1,
-        Position = UDim2.fromOffset(8, 0),
-        Size = UDim2.new(0.38, -8, 1, 0),
-        Font = Enum.Font.Gotham,
-        TextSize = 12,
-        TextColor3 = Theme.Text,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        TextTruncate = Enum.TextTruncate.AtEnd,
-        Text = p.DisplayName,
-    }, row)
-    local roleLabel = new("TextLabel", {
-        BackgroundTransparency = 1,
-        Position = UDim2.new(0.38, 0, 0, 0),
-        Size = UDim2.new(0.62, -150, 1, 0),
-        Font = Enum.Font.GothamBold,
-        TextSize = 12,
-        TextColor3 = UNKNOWN_COLOR,
-        TextTruncate = Enum.TextTruncate.AtEnd,
-        Text = "?",
-    }, row)
-    local tgt = smallButton("Tgt", -146, row)
-    local tp = smallButton("TP", -98, row)
-    local vw = smallButton("View", -50, row)
+    local _, right, left = UI.card(listHolder, p.DisplayName, "@" .. p.Name, 180, nil)
+    local card = right.Parent
+    card.Name = "PlayerRow"
+    local roleChip = UI.chip(left:FindFirstChild("TitleRow"), "?", UNKNOWN_COLOR, 3)
+    local tgt = pillButton("Target", "Target", right, 1)
+    local tp = pillButton("TP", "TP", right, 2)
+    local vw = pillButton("View", "View", right, 3)
     connect(tgt.MouseButton1Click, function()
         local ok, msg = Actions.setTarget(p)
         if ok ~= false then
@@ -1787,110 +1129,114 @@ function PlayerRows.add(p)
     connect(vw.MouseButton1Click, function()
         View.start(p)
     end)
-    PlayerRows[p] = { row = row, role = roleLabel, name = nameLabel }
+    PlayerRows.rows[p] = { card = card, role = roleChip, title = left:FindFirstChild("TitleRow"):FindFirstChild("Title") }
 end
 
 function PlayerRows.remove(p)
-    local r = PlayerRows[p]
+    local r = PlayerRows.rows[p]
     if r then
-        r.row:Destroy()
-        PlayerRows[p] = nil
+        r.card:Destroy()
+        PlayerRows.rows[p] = nil
     end
 end
 
 -- World --------------------------------------------------------------
 UI.section(Pages.world, "Lighting")
-UI.toggle(Pages.world, "Fullbright", false, function(v)
+UI.toggle(Pages.world, "Fullbright", "Lights up the whole map so you can see everywhere clearly. Only you see the difference.", false, function(v)
     S.fullbright = v
     World.refreshLighting()
-end)
-UI.toggle(Pages.world, "No fog", false, function(v)
+end, { bind = true, risk = "local" })
+UI.toggle(Pages.world, "No fog", nil, false, function(v)
     S.noFog = v
     World.refreshLighting()
-end)
+end, { risk = "local" })
 UI.section(Pages.world, "Interaction")
-UI.toggle(Pages.world, "Instant interact (hold = 0)", false, function(v)
+UI.toggle(Pages.world, "Instant interact", "Sets hold time of every prompt you see to zero (lockers, doors, medkits).", false, function(v)
     S.instantInteract = v
     if not v then
         World.restorePrompts()
     end
-end)
+end, { risk = "server" })
 UI.section(Pages.world, "Utility")
-UI.toggle(Pages.world, "Anti AFK", S.antiAfk, function(v)
+UI.toggle(Pages.world, "Anti AFK", "Stops the idle kick.", S.antiAfk, function(v)
     S.antiAfk = v
 end)
 
 -- Dev tools ----------------------------------------------------------
-UI.label(Pages.dev, "Buat kalibrasi yang lengkap, jalankan NoctisENIX Inspector (file terpisah, lihat README). Tombol di bawah versi ringkasnya.")
+UI.note(Pages.dev, "For a full calibration run <b>NoctisENIX Inspector</b> (separate loadstring, see README) during a match and send the saved file. These buttons are the quick version.")
 UI.section(Pages.dev, "Scanner")
-UI.button(Pages.dev, "Scan remotes", Dev.scanRemotes)
-UI.button(Pages.dev, "Dump all players (attributes, tools, intel)", Dev.dumpAllPlayers)
+UI.button(Pages.dev, "Scan remotes", "Lists every RemoteEvent / RemoteFunction and copies them.", Dev.scanRemotes, { action = "Scan" })
+UI.button(Pages.dev, "Dump players", "Attributes, tools, values and current intel for everyone.", Dev.dumpAllPlayers, { action = "Dump" })
 UI.section(Pages.dev, "Remote logger")
-UI.label(Pages.dev, "Log FireServer / InvokeServer yang kamu picu sendiri (butuh hookmetamethod).")
-UI.toggle(Pages.dev, "Log remote calls", false, function(v)
+UI.toggle(Pages.dev, "Log remote calls", "Logs FireServer / InvokeServer calls your client makes. Needs hookmetamethod.", false, function(v)
     if v and not Dev.installLogger() then
-        notify("Remote logger", "Executor ini nggak support hookmetamethod", nil, 4)
+        notify("Remote logger", "This executor does not support hookmetamethod", Theme.Bad, 4)
         LogState.enabled = false
         return
     end
     LogState.enabled = v
     S.logRemotes = v
 end)
-UI.button(Pages.dev, "Copy remote log", function()
+UI.button(Pages.dev, "Copy remote log", nil, function()
     local text = table.concat(LogState.lines, "\n")
     if text == "" then
-        notify("Remote logger", "Log masih kosong", nil, 2)
+        notify("Remote logger", "Log is empty", nil, 2)
         return
     end
     local copied = copyText(text)
     notify("Remote logger", copied and "Copied to clipboard" or "Printed in console (F9)", nil, 3)
-end)
+end, { action = "Copy" })
 
 -- Settings -----------------------------------------------------------
 UI.section(Pages.settings, "Menu")
-local gameStatus = UI.label(Pages.settings, "Checking game...")
 local menuBind = { key = Config.ToggleKey }
-do
-    local row = UI.row(Pages.settings, 30)
-    new("TextLabel", {
-        BackgroundTransparency = 1,
-        Position = UDim2.fromOffset(10, 0),
-        Size = UDim2.new(1, -90, 1, 0),
-        Font = Enum.Font.Gotham,
-        TextSize = 13,
-        TextColor3 = Theme.Text,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Text = "Menu toggle key",
-    }, row)
-    UI.keyButton(row, UDim2.new(1, -66, 0.5, -10), menuBind)
-end
+UI.keyCard(Pages.settings, "Menu key", "Opens and closes this window.", menuBind)
+UI.slider(Pages.settings, "UI scale", "Makes the whole window bigger or smaller.", 0.7, 1.3, 1, function(v)
+    UI.scale.Scale = v
+end, 2)
+UI.section(Pages.settings, "Cursor")
+UI.toggle(Pages.settings, "Free mouse while menu is open", "Unlocks and shows the mouse while the menu is open, even when the game hides it.", S.freeMouse, function(v)
+    S.freeMouse = v
+    if not v then
+        UI.restoreCursor()
+    end
+end)
+UI.toggle(Pages.settings, "Cursor halo", "Draws a ring under your mouse over the menu so you never lose it.", S.cursorHalo, function(v)
+    S.cursorHalo = v
+end)
+UI.section(Pages.settings, "Game")
+local statusFeed = UI.feed(Pages.settings, "Status", 3)
 UI.section(Pages.settings, "Session")
-UI.button(Pages.settings, "Rejoin server", function()
+UI.button(Pages.settings, "Rejoin server", nil, function()
     pcall(function()
         TeleportService:Teleport(game.PlaceId, LocalPlayer)
     end)
-end)
+end, { action = "Rejoin" })
 
 local Unload
-UI.button(Pages.settings, "Unload NoctisENIX", function()
+UI.button(Pages.settings, "Unload NoctisENIX", "Turns everything off and removes the script.", function()
     Unload()
-end)
+end, { action = "Unload" })
 
 ----------------------------------------------------------------------
 -- Refresh UI berkala
 ----------------------------------------------------------------------
+local Status = { game = "checking...", config = "checking..." }
+
 local function refreshUi()
-    for p, r in pairs(PlayerRows) do
-        if type(r) == "table" and r.role then
-            local info = intelInfo(p)
-            local team = infoTeam(info)
-            local text = info.role or (team and (team .. " team")) or "?"
-            if info.role and info.confidence and info.confidence ~= "confirmed" then
-                text = text .. "?"
-            end
-            r.role.Text = text
-            r.role.TextColor3 = teamColor(team)
-            r.name.Text = info.disguise and (info.disguise .. " (@" .. p.Name .. ")") or p.DisplayName
+    for p, r in pairs(PlayerRows.rows) do
+        local info = intelInfo(p)
+        local team = infoTeam(info)
+        local label = info.role and string.upper(info.role) or (team and (team .. " TEAM")) or "?"
+        if info.role and info.confidence and info.confidence ~= "confirmed" then
+            label = label .. " ?"
+        end
+        local color = teamColor(team)
+        r.role.Text = label
+        r.role.TextColor3 = color
+        r.role.BackgroundColor3 = color
+        if r.title then
+            r.title.Text = info.disguise and (info.disguise .. "  (" .. p.DisplayName .. ")") or p.DisplayName
         end
     end
 
@@ -1899,8 +1245,9 @@ local function refreshUi()
         role, team = nil, nil
     end
     team = team or (role and Game.teamOf(role))
-    selfRoleLabel.Text = "Your role: " .. (role or "unknown") .. (team and ("  (" .. team .. ")") or "")
-    selfRoleLabel.TextColor3 = teamColor(team)
+    selfFeed.Set({
+        { text = "<b>" .. esc(role or "Unknown yet") .. "</b>" .. (team and ("  -  " .. team .. " TEAM") or ""), color = teamColor(team) },
+    })
 
     local known = {}
     for _, p in ipairs(Players:GetPlayers()) do
@@ -1908,19 +1255,16 @@ local function refreshUi()
             local info = intelInfo(p)
             local t = infoTeam(info)
             if info.role or t then
-                local line = p.DisplayName .. ": " .. (info.role or "?") .. (t and (" [" .. t .. "]") or "")
+                local line = "<b>" .. esc(p.DisplayName) .. "</b>  " .. esc(info.role or "?") .. (t and ("  [" .. t .. "]") or "")
                 if info.confidence then
-                    line = line .. " - " .. info.confidence
+                    line = line .. "  -  " .. info.confidence
                 end
                 if info.reason then
-                    line = line .. " (" .. info.reason .. ")"
+                    line = line .. '  <font color="#8F89AA">(' .. esc(info.reason) .. ")</font>"
                 end
                 known[#known + 1] = { text = line, color = teamColor(t) }
             end
         end
-    end
-    if #known == 0 then
-        known[1] = { text = "Belum ada yang ketahuan. Bukti muncul saat ada aksi di game." }
     end
     knownFeed.Set(known)
 
@@ -1929,7 +1273,9 @@ local function refreshUi()
     if okFeed and type(feed) == "table" then
         for i = #feed, math.max(1, #feed - 11), -1 do
             local e = feed[i]
-            items[#items + 1] = { text = string.format("%ds ago  %s", math.floor(os.clock() - (e.t or os.clock())), tostring(e.text)) }
+            items[#items + 1] = {
+                text = string.format('<font color="#8F89AA">%ds</font>  %s', math.floor(os.clock() - (e.t or os.clock())), esc(e.text)),
+            }
         end
     end
     evidenceFeed.Set(items)
@@ -1938,6 +1284,11 @@ local function refreshUi()
     if okT then
         targetDropdown.SetLabel(targetLabel(target))
     end
+
+    statusFeed.Set({
+        { text = "Game: " .. esc(Status.game) },
+        { text = "Config: " .. esc(Status.config) },
+    })
 end
 
 ----------------------------------------------------------------------
@@ -1984,13 +1335,15 @@ connect(RunService.Heartbeat, function(dt)
     acc.ui = acc.ui + dt
     if acc.ui >= 0.5 then
         acc.ui = 0
-        safeOnce(refreshUi)
+        if UI.main.Visible then
+            safeOnce(refreshUi)
+        end
     end
 end)
 
-connect(closeBtn.MouseButton1Click, function()
-    main.Visible = false
-    notify("NoctisENIX", "Menu hidden. Tekan " .. (menuBind.key and menuBind.key.Name or "menu key") .. " buat buka lagi.", nil, 3)
+connect(UI.closeButton.MouseButton1Click, function()
+    UI.setVisible(false)
+    notify("NoctisENIX", "Menu hidden. Press " .. (menuBind.key and menuBind.key.Name or "the menu key") .. " to open it again.", nil, 3)
 end)
 
 connect(UserInputService.InputBegan, function(input, processed)
@@ -2004,7 +1357,10 @@ connect(UserInputService.InputBegan, function(input, processed)
         return
     end
     if menuBind.key and input.KeyCode == menuBind.key then
-        main.Visible = not main.Visible
+        UI.setVisible(not UI.main.Visible)
+        if UI.main.Visible then
+            safeOnce(refreshUi)
+        end
         return
     end
     for _, bind in ipairs(UI.binds) do
@@ -2026,6 +1382,7 @@ Unload = function()
     pcall(Move.stopFly)
     pcall(View.stop)
     pcall(World.restorePrompts)
+    pcall(UI.restoreCursor)
     pcall(function()
         S.fullbright, S.noFog = false, false
         World.refreshLighting()
@@ -2068,7 +1425,7 @@ Unload = function()
     end
 end
 
-genv.NoctisENIX = { Version = Config.Version, Unload = Unload, Intel = Intel, Actions = Actions, Game = Game }
+genv.NoctisENIX = { Version = Config.Version, Unload = Unload, Intel = Intel, Actions = Actions, Game = Game, UI = UI }
 
 UI.selectTab(UI.tabs[1])
 
@@ -2078,11 +1435,9 @@ task.spawn(function()
     end)
     local name = (ok and info and info.Name) or "unknown"
     if string.find(string.lower(name), "mafia", 1, true) then
-        gameStatus.Text = "Game: " .. esc(name) .. "  (OK)"
-        gameStatus.TextColor3 = GOOD_COLOR
+        Status.game = name .. " (OK)"
     else
-        gameStatus.Text = "Game: " .. esc(name) .. "  (bukan MAFIA? fitur umum tetap jalan)"
-        gameStatus.TextColor3 = Color3.fromRGB(255, 190, 80)
+        Status.game = name .. " (not MAFIA? general features still work)"
     end
 end)
 
@@ -2090,12 +1445,13 @@ task.spawn(function()
     local caps = Game.caps or {}
     local okRoles = pcall(Game.roles, true)
     local fromConfig = okRoles and Game.rolesFromConfig
-    configLabel.Text = string.format(
-        "Game config: %s | require: %s | identity switch: %s",
-        fromConfig and "loaded from game" or "fallback list",
+    Status.config = string.format(
+        "%s | require %s | identity switch %s",
+        fromConfig and "roles loaded from the game" or "built-in role list",
         caps.require and "yes" or "no",
         caps.setthreadidentity and "yes" or "no"
     )
 end)
 
-notify("NoctisENIX v" .. Config.Version .. " loaded", Config.ToggleKey.Name .. " = toggle menu", nil, 5)
+refreshUi()
+notify("NoctisENIX v" .. Config.Version, "Loaded. " .. Config.ToggleKey.Name .. " opens and closes the menu.", nil, 5)

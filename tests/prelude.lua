@@ -536,3 +536,24 @@ __mkPlayer = function(name, opts)
     list[#list + 1] = plr
     return plr
 end
+
+-- ===== UI v2 mocks =====
+ColorSequence = { new = function(a, b) return { Keypoints = { a, b or a } } end }
+ColorSequenceKeypoint = { new = function(t, c) return { Time = t, Value = c } end }
+NumberSequence = { new = function(a) return { Keypoints = a } end }
+NumberSequenceKeypoint = { new = function(t, v) return { Time = t, Value = v } end }
+__renderBinds = {}
+function Methods.BindToRenderStep(self, name, priority, fn) __renderBinds[name] = fn end
+function Methods.UnbindFromRenderStep(self, name) __renderBinds[name] = nil end
+__mouse = Vector2.new(5, 5)
+function Methods.GetMouseLocation() return __mouse end
+__services.UserInputService = __services.UserInputService or game:GetService("UserInputService")
+__services.UserInputService.MouseIconEnabled = false
+__services.UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+Defaults.Frame.AbsoluteSize = Vector2.new(200, 10)
+function __runRenderBinds() for _, fn in pairs(__renderBinds) do fn() end end
+Enum.RenderPriority.First.Value = 0
+Enum.RenderPriority.Input.Value = 100
+Enum.RenderPriority.Camera.Value = 200
+Enum.RenderPriority.Character.Value = 300
+Enum.RenderPriority.Last.Value = 2000
