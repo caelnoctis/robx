@@ -19,7 +19,7 @@
     Snapshot me-require ModuleScript game (identity 2); controller bisa punya efek samping.
 ]]
 
-local VERSION = "1.0.0"
+local VERSION = "1.1.0"
 
 local genv = _G
 if type(getgenv) == "function" then
@@ -119,8 +119,11 @@ local St = own({
     tagHooked = own({}),
     tagN = 0,
     remoteN = 0,
+    remoteWait = own(setmetatable({}, { __mode = "k" })),
+    connsOk = false,
     animSeen = own({}),
     animNames = own({}),
+    gameAnims = own({}),
     defaultAnims = own({}),
     guiPrev = nil,
     guiTick = own({}),
@@ -139,7 +142,13 @@ local St = own({
 })
 
 local RATE_MAX, RATE_WINDOW = 20, 10
+-- pesan sistem chat (pengumuman, vote, hasil Harbinger) datang beruntun: kuota sendiri yang besar
+local RATE_MAX_SYSTEM_CHAT = 200
 local TREE_CAP, TREE_DEPTH = 4000, 8
+-- remote baru tanpa getconnections: tunggu segini sebelum connect OnClientEvent
+local REMOTE_GRACE = 5
+-- animasi gerak (default Animate / looped Core-Idle-Movement): satu baris per pemain+id per N dtk
+local MOVE_DEDUPE = 10
 
 local MODULE_PATHS = {
     "shared.configurations.roles",
@@ -175,6 +184,7 @@ local MAP_WORDS = { "door", "locker", "closet", "medkit", "corpse", "bodies", "b
 local GC_KEYS = { "role", "Role", "currentRole", "team", "Team", "roles", "players", "playerRoles" }
 local BORING_STATES = { Running = true, RunningNoPhysics = true, Jumping = true, Freefall = true, Landed = true, Climbing = true, Swimming = true }
 local SKIP_PLAYER_CHILD = { PlayerGui = true, PlayerScripts = true, Backpack = true, StarterGear = true }
+local MOVE_PRIO = { Core = true, Idle = true, Movement = true }
 local STD_ANIM_SLOTS = {
     idle = true, walk = true, run = true, jump = true, fall = true, climb = true, sit = true, swim = true, swimidle = true,
     toolnone = true, toollunge = true, toolslash = true, wave = true, point = true, dance = true, dance2 = true,
@@ -481,6 +491,8 @@ local function attrsInline(inst, cap)
     if not ok or type(a) ~= "table" then
         return ""
     end
+    -- salinan attribute (mis. {Role="Doctor"}) jangan sampai muncul di probe getgc
+    own(a)
     local names = {}
     for k in pairs(a) do
         names[#names + 1] = tostring(k)
@@ -705,13 +717,27 @@ local function resolve(path, descCache)
 end
 
 -- require di thread sendiri (identity opsional) dengan timeout, biar modul yang nge-yield tidak bikin macet.
+-- Return ok, hasil, identity yang benar-benar dipakai (string, buat label).
+-- Cuma config data murni (ReplicatedStorage.shared.configurations) yang aman di-require.
+local function isConfigModule(inst)
+    local shared = ReplicatedStorage and findChild(ReplicatedStorage, "shared")
+    local cfg = shared and findChild(shared, "configurations")
+    if not cfg then
+        return false
+    end
+    local ok, inside = pcall(function()
+        return inst:IsDescendantOf(cfg)
+    end)
+    return ok and inside or false
+end
+
 local function timedRequire(inst, ident, timeout)
     if type(require) ~= "function" then
-        return false, "require missing"
+        return false, "require missing", "?"
     end
     local req = require
     local getId, setId = idFns()
-    local box = { done = false }
+    local box = { done = false, used = "current" }
     timeout = timeout or 3
     task.spawn(function()
         local prevId = nil
@@ -722,7 +748,16 @@ local function timedRequire(inst, ident, timeout)
                     prevId = v
                 end
             end
-            pcall(setId, ident)
+            local okS = pcall(setId, ident)
+            box.used = okS and tostring(ident) or "current (setthreadidentity failed)"
+            if okS and getId then
+                local okG2, v2 = pcall(getId)
+                if okG2 and v2 ~= nil and v2 ~= ident then
+                    box.used = tostring(v2) .. " (asked " .. tostring(ident) .. ")"
+                end
+            end
+        elseif ident then
+            box.used = "current (no setthreadidentity)"
         end
         local ok, res = pcall(req, inst)
         if prevId ~= nil then
@@ -735,9 +770,9 @@ local function timedRequire(inst, ident, timeout)
         task.wait(0.05)
     end
     if not box.done then
-        return false, "timeout: module yielded > " .. tostring(timeout) .. "s"
+        return false, "timeout: module yielded > " .. tostring(timeout) .. "s", box.used
     end
-    return box.ok, box.res
+    return box.ok, box.res, box.used
 end
 
 local function countKeys(t, cap)
@@ -1062,10 +1097,30 @@ local function treeWalk(out, node, depth, budget, kids)
     end
 end
 
--- Map id animasi -> nama (dipakai log ANIM).
+-- Ada di dalam script Animate (karakter / StarterCharacterScripts)?
+local function inAnimate(d)
+    local n, hops = prop(d, "Parent"), 0
+    while n and hops < 6 do
+        if prop(n, "Name") == "Animate" then
+            return true
+        end
+        n = prop(n, "Parent")
+        hops = hops + 1
+    end
+    return false
+end
+
+-- Map id animasi -> nama (dipakai log ANIM). Id di luar Animate = animasi game (gameAnims).
 local function addAnim(d)
     local id = normId(prop(d, "AnimationId"))
-    if id and St.animNames[id] == nil then
+    if not id then
+        return
+    end
+    local mine = inAnimate(d)
+    if not mine then
+        St.gameAnims[id] = true
+    end
+    if St.animNames[id] == nil then
         local nm = d.Name
         if nm == "Animation" or nm == "Anim" then
             nm = tostring(prop(prop(d, "Parent"), "Name")) .. "/" .. nm
@@ -1074,8 +1129,35 @@ local function addAnim(d)
     end
 end
 
+local function addAnimsIn(root)
+    for _, d in ipairs(descendants(root)) do
+        if d.ClassName == "Animation" then
+            addAnim(d)
+        end
+    end
+end
+
+-- Tempat animasi tool (Knife/Glock biasanya simpan Animation di dalam Tool).
+local function toolAnimRoots()
+    local roots = {}
+    local function add(x)
+        if x then
+            roots[#roots + 1] = x
+        end
+    end
+    add(StarterPack)
+    add(Lighting)
+    for _, p in ipairs(Players:GetPlayers()) do
+        add(childOfClass(p, "Backpack"))
+    end
+    return roots
+end
+
 -- Id animasi bawaan (script Animate) -> ditandai [default] di log.
+-- Dibangun ulang tiap scan; id yang juga dipakai animasi game (mis. crawl yang ditaruh di slot walk
+-- waktu downed) tidak dianggap default.
 local function scanDefaultAnims()
+    St.defaultAnims = own({})
     local holders = {}
     for _, pl in ipairs(Players:GetPlayers()) do
         local ch = prop(pl, "Character")
@@ -1094,7 +1176,7 @@ local function scanDefaultAnims()
             -- cuma slot standar Animate (walk/idle/...); slot custom (mis. crawl) tetap dianggap penting
             if d.ClassName == "Animation" and STD_ANIM_SLOTS[string.lower(tostring(prop(prop(d, "Parent"), "Name")))] then
                 local id = normId(prop(d, "AnimationId"))
-                if id then
+                if id and not St.gameAnims[id] then
                     St.defaultAnims[id] = true
                 end
             end
@@ -1160,7 +1242,8 @@ local function logLines()
     return out
 end
 
-local function emit(cat, source, text)
+-- maxN opsional: kuota per sumber per window (default RATE_MAX).
+local function emit(cat, source, text, maxN)
     if not St.live then
         return
     end
@@ -1174,7 +1257,7 @@ local function emit(cat, source, text)
         St.rate[source] = r
     end
     r.n = r.n + 1
-    if r.n > RATE_MAX then
+    if r.n > (maxN or RATE_MAX) then
         r.sup = r.sup + 1
         return
     end
@@ -1251,7 +1334,9 @@ end
 ----------------------------------------------------------------------
 local L = own({})
 
-function L.attr(inst, label, cat)
+-- initial = true: instance baru muncul setelah live jalan (CharacterAdded, PlayerAdded, ChildAdded).
+-- Attribute yang ikut ter-replikasi bareng instance tidak memicu AttributeChanged, jadi ditulis sekali.
+function L.attr(inst, label, cat, initial)
     if typeof(inst) ~= "Instance" or not once(inst, "attr") then
         return
     end
@@ -1259,8 +1344,15 @@ function L.attr(inst, label, cat)
     local last = own({})
     local okA, a = pcall(inst.GetAttributes, inst)
     if okA and type(a) == "table" then
+        own(a)
         for k, v in pairs(a) do
             last[k] = v
+        end
+    end
+    if initial then
+        local s = attrsInline(inst, 40)
+        if s ~= "" then
+            emit(cat, cat .. "INIT:" .. label, label .. " initial: " .. s)
         end
     end
     on(St.liveConns, prop(inst, "AttributeChanged"), function(name)
@@ -1274,21 +1366,24 @@ function L.attr(inst, label, cat)
     end, "attr " .. label)
 end
 
-function L.value(v, label)
+function L.value(v, label, initial)
     if not once(v, "val") then
         return
+    end
+    if initial then
+        emit("VALUE", "VAL:" .. label, label .. " = " .. show(prop(v, "Value")) .. " (initial)")
     end
     on(St.liveConns, propSig(v, "Value"), function()
         emit("VALUE", "VAL:" .. label, label .. " = " .. show(prop(v, "Value")))
     end, "value " .. label)
 end
 
-function L.values(container, label, depth)
+function L.values(container, label, depth, initial)
     for _, c in ipairs(children(container)) do
         if isA(c, "ValueBase") then
-            L.value(c, label .. "." .. c.Name)
+            L.value(c, label .. "." .. c.Name, initial)
         elseif depth > 1 and (c.ClassName == "Folder" or c.ClassName == "Configuration") then
-            L.values(c, label .. "." .. c.Name, depth - 1)
+            L.values(c, label .. "." .. c.Name, depth - 1, initial)
         end
     end
 end
@@ -1323,15 +1418,19 @@ function L.anim(p, animator)
         local key = name .. ":" .. tostring(id or aname)
         local t = now()
         local isDef = id and St.defaultAnims[id] or false
-        -- duplikat < 1 dtk dibuang; animasi bawaan (jalan/idle) cukup sekali per 30 dtk
+        local looped = prop(track, "Looped")
+        local prio = enumName(prop(track, "Priority"))
+        -- duplikat < 1 dtk dibuang; animasi gerak (default Animate, atau set custom yang looped dengan
+        -- prioritas Core/Idle/Movement) cukup sekali per MOVE_DEDUPE dtk per pemain+id
+        local moveCls = isDef or (looped == true and MOVE_PRIO[prio] == true)
         local seen = St.animSeen[key]
-        if seen and t - seen < (isDef and 30 or 1) then
+        if seen and t - seen < (moveCls and MOVE_DEDUPE or 1) then
             return
         end
         St.animSeen[key] = t
         local resolved = id and St.animNames[id] or nil
         local text = name .. " " .. q(tostring(aname)) .. " id=" .. tostring(id) .. " -> " .. tostring(resolved or "?")
-            .. " looped=" .. tostring(prop(track, "Looped")) .. " prio=" .. enumName(prop(track, "Priority"))
+            .. " looped=" .. tostring(looped) .. " prio=" .. prio
         if isDef then
             text = text .. " [default]"
         end
@@ -1339,12 +1438,12 @@ function L.anim(p, animator)
     end, "anim")
 end
 
-function L.hum(p, hum)
+function L.hum(p, hum, initial)
     if not once(hum, "hum") then
         return
     end
     local name = pname(p)
-    L.attr(hum, name .. ".Humanoid")
+    L.attr(hum, name .. ".Humanoid", nil, initial)
     local animator = childOfClass(hum, "Animator")
     if animator then
         L.anim(p, animator)
@@ -1386,27 +1485,29 @@ function L.hum(p, hum)
     end
 end
 
-function L.char(p, ch)
+function L.char(p, ch, initial)
     if typeof(ch) ~= "Instance" or not once(ch, "char") then
         return
     end
     local name = pname(p)
-    L.attr(ch, name .. ".Character")
-    local function part(c)
+    L.attr(ch, name .. ".Character", nil, initial)
+    local function part(c, init)
         if c.ClassName == "Humanoid" then
-            L.hum(p, c)
+            L.hum(p, c, init)
         elseif c.Name == "HumanoidRootPart" then
-            L.attr(c, name .. ".HRP")
+            L.attr(c, name .. ".HRP", nil, init)
         elseif isA(c, "ValueBase") then
-            L.value(c, name .. ".Character." .. c.Name)
+            L.value(c, name .. ".Character." .. c.Name, init)
         end
     end
     for _, c in ipairs(children(ch)) do
-        part(c)
+        part(c, initial)
     end
     on(St.liveConns, prop(ch, "ChildAdded"), function(c)
-        part(c)
+        part(c, true)
         if isA(c, "Tool") then
+            -- tool baru dipegang: Animation di dalamnya ikut dipetakan (stab/shoot)
+            addAnimsIn(c)
             local a = attrsInline(c, 10)
             emit("TOOL", "TOOL:" .. name, name .. " equipped " .. q(c.Name) .. (a ~= "" and (" {" .. a .. "}") or ""))
         end
@@ -1418,17 +1519,34 @@ function L.char(p, ch)
     end, "char child-")
 end
 
-function L.player(p)
+-- Backpack: Animation di dalam tool yang baru dikasih ikut dipetakan id -> nama.
+function L.backpack(bp)
+    if typeof(bp) ~= "Instance" or not once(bp, "bp") then
+        return
+    end
+    addAnimsIn(bp)
+    on(St.liveConns, prop(bp, "DescendantAdded"), function(d)
+        if d.ClassName == "Animation" then
+            addAnim(d)
+        end
+    end, "backpack")
+end
+
+function L.player(p, initial)
     if not once(p, "player") then
         return
     end
     local name = pname(p)
-    L.attr(p, name)
-    L.values(p, name, 2)
+    L.attr(p, name, nil, initial)
+    L.values(p, name, 2, initial)
+    L.backpack(childOfClass(p, "Backpack"))
     on(St.liveConns, propSig(p, "Team"), function()
         emit("PLAYER", "TEAM:" .. name, name .. " team -> " .. teamName(p))
     end, "team")
     on(St.liveConns, prop(p, "ChildAdded"), function(c)
+        if c.ClassName == "Backpack" then
+            L.backpack(c)
+        end
         if SKIP_PLAYER_CHILD[c.ClassName] then
             return
         end
@@ -1437,17 +1555,19 @@ function L.player(p)
             extra = " = " .. show(prop(c, "Value"))
             L.value(c, name .. "." .. c.Name)
         elseif c.ClassName == "Folder" or c.ClassName == "Configuration" then
-            L.values(c, name .. "." .. c.Name, 1)
+            L.values(c, name .. "." .. c.Name, 1, true)
         end
         emit("PLAYER", "PCHILD:" .. name, name .. " child added " .. c.Name .. " [" .. c.ClassName .. "]" .. extra)
     end, "player child")
     on(St.liveConns, prop(p, "CharacterAdded"), function(ch)
         emit("PLAYER", "CHAR:" .. name, name .. " spawned (CharacterAdded)")
-        L.char(p, ch)
+        L.char(p, ch, true)
+        -- Backpack dibuat ulang tiap spawn
+        L.backpack(childOfClass(p, "Backpack"))
     end, "characteradded")
     local ch = prop(p, "Character")
     if ch then
-        L.char(p, ch)
+        L.char(p, ch, initial)
     end
 end
 
@@ -1456,8 +1576,8 @@ function L.players()
         L.player(p)
     end
     on(St.liveConns, prop(Players, "PlayerAdded"), function(p)
-        emit("PLAYER", "JOIN", pname(p) .. " joined")
-        L.player(p)
+        emit("PLAYER", "JOIN", pname(p) .. " joined (team " .. teamName(p) .. ")")
+        L.player(p, true)
     end, "playeradded")
     on(St.liveConns, prop(Players, "PlayerRemoving"), function(p)
         emit("PLAYER", "LEAVE", pname(p) .. " left")
@@ -1473,20 +1593,23 @@ function L.globals()
 end
 
 function L.scanAnims()
-    local roots = { ReplicatedStorage, ReplicatedFirst, StarterPlayer, childOfClass(LocalPlayer, "PlayerScripts") }
-    for _, r in ipairs(roots) do
-        for _, d in ipairs(descendants(r)) do
-            if d.ClassName == "Animation" then
-                addAnim(d)
-            end
-        end
+    local base = { ReplicatedStorage, ReplicatedFirst, StarterPlayer, childOfClass(LocalPlayer, "PlayerScripts") }
+    for i = 1, 4 do
+        addAnimsIn(base[i])
+    end
+    for _, r in ipairs(toolAnimRoots()) do
+        addAnimsIn(r)
+    end
+    for _, p in ipairs(Players:GetPlayers()) do
+        addAnimsIn(prop(p, "Character"))
     end
     scanDefaultAnims()
 end
 
+-- Return true kalau tag ini baru di-hook.
 function L.hookTag(tag)
     if St.tagHooked[tag] or St.tagN >= 600 or not CollectionService then
-        return
+        return false
     end
     St.tagHooked[tag] = true
     St.tagN = St.tagN + 1
@@ -1499,17 +1622,30 @@ function L.hookTag(tag)
     on(St.liveConns, okR and sr or nil, function(inst)
         emit("TAG", "TAG:" .. tag, "-" .. tag .. " " .. fullName(inst) .. ownerSuffix(inst))
     end, "tag- " .. tag)
+    return true
 end
 
-function L.tags()
+-- rescan = true (timer 10 dtk): tag yang baru ketemu sudah nempel di instance sebelum di-hook,
+-- jadi pemegangnya ditulis sekarang (biasanya itu satu-satunya kejadian di ronde ini).
+function L.tags(rescan)
     if not CollectionService then
         return
     end
     local ok, tags = pcall(CollectionService.GetAllTags, CollectionService)
-    if ok and type(tags) == "table" then
-        for _, tag in ipairs(tags) do
-            if type(tag) == "string" then
-                L.hookTag(tag)
+    if not ok or type(tags) ~= "table" then
+        return
+    end
+    for _, tag in ipairs(tags) do
+        if type(tag) == "string" and L.hookTag(tag) and rescan then
+            local okG, list = pcall(CollectionService.GetTagged, CollectionService, tag)
+            if okG and type(list) == "table" then
+                for i, inst in ipairs(list) do
+                    if i > 15 then
+                        emit("TAG", "TAG:" .. tag, "+" .. tag .. " ... +" .. (#list - 15) .. " more already tagged")
+                        break
+                    end
+                    emit("TAG", "TAG:" .. tag, "+" .. tag .. " " .. fullName(inst) .. ownerSuffix(inst) .. " (already tagged when discovered)")
+                end
             end
         end
     end
@@ -1539,12 +1675,33 @@ function L.chat()
         if type(meta) == "string" and meta ~= "" then
             line = line .. " meta=" .. q(meta, 120)
         end
-        emit("CHAT", "CHAT:" .. who, line)
+        -- pesan sistem pakai kuota besar: burst pengumuman / vote di akhir malam jangan sampai ke-suppress
+        emit("CHAT", "CHAT:" .. who, line, src == nil and RATE_MAX_SYSTEM_CHAT or nil)
     end, "chat")
 end
 
-function L.remote(r)
-    if typeof(r) ~= "Instance" or not EVENT_CLS[r.ClassName] or St.remoteN >= 1500 or not once(r, "rin") then
+-- Koneksi pertama ke OnClientEvent menguras antrean event Roblox (event yang datang sebelum ada
+-- listener). Kalau inspector connect duluan, listener game yang connect belakangan kehilangan event itu.
+-- Jadi: connect hanya kalau game sudah listen (getconnections), atau REMOTE_GRACE dtk setelah remote
+-- baru muncul kalau getconnections tidak ada / tidak bisa dipercaya.
+-- Return true/false = game punya listener atau tidak; nil = tidak bisa dicek.
+local function gameListens(r)
+    if not St.connsOk or type(getconnections) ~= "function" then
+        return nil
+    end
+    local sig = prop(r, "OnClientEvent")
+    if sig == nil then
+        return nil
+    end
+    local ok, list = pcall(getconnections, sig)
+    if ok and type(list) == "table" then
+        return #list > 0
+    end
+    return nil
+end
+
+local function hookRemote(r)
+    if St.remoteN >= 1500 or not once(r, "rin") then
         return
     end
     St.remoteN = St.remoteN + 1
@@ -1554,12 +1711,79 @@ function L.remote(r)
     end, "remote in")
 end
 
+-- isNew = muncul lewat DescendantAdded setelah live jalan.
+function L.remote(r, isNew)
+    if typeof(r) ~= "Instance" or not EVENT_CLS[r.ClassName] then
+        return
+    end
+    local h = St.hk[r]
+    if h and h.rin then
+        return
+    end
+    local listens = gameListens(r)
+    if listens == true or (listens == nil and not isNew) then
+        St.remoteWait[r] = nil
+        hookRemote(r)
+    elseif St.remoteWait[r] == nil then
+        St.remoteWait[r] = now()
+    end
+end
+
+-- Dipanggil timer: hook remote yang ditunda begitu game sudah listen / masa tunggu habis.
+function L.remoteTick()
+    local t = now()
+    local ready = {}
+    for r, t0 in pairs(St.remoteWait) do
+        if prop(r, "Parent") == nil then
+            St.remoteWait[r] = nil
+        else
+            local listens = gameListens(r)
+            if listens == true or (listens == nil and t - t0 >= REMOTE_GRACE) then
+                ready[#ready + 1] = r
+            end
+        end
+    end
+    for _, r in ipairs(ready) do
+        St.remoteWait[r] = nil
+        hookRemote(r)
+    end
+end
+
+function L.remoteWaiting()
+    local n = 0
+    for _ in pairs(St.remoteWait) do
+        n = n + 1
+    end
+    return n
+end
+
 function L.remotes()
-    for _, d in ipairs(descendants(ReplicatedStorage)) do
-        L.remote(d)
+    St.remoteWait = own(setmetatable({}, { __mode = "k" }))
+    St.connsOk = false
+    local list = descendants(ReplicatedStorage)
+    -- getconnections dianggap bisa dipercaya kalau minimal satu remote kelihatan punya listener
+    if type(getconnections) == "function" then
+        local n = 0
+        for _, d in ipairs(list) do
+            if EVENT_CLS[d.ClassName] then
+                n = n + 1
+                if n > 300 then
+                    break
+                end
+                local sig = prop(d, "OnClientEvent")
+                local ok, c = pcall(getconnections, sig)
+                if sig ~= nil and ok and type(c) == "table" and #c > 0 then
+                    St.connsOk = true
+                    break
+                end
+            end
+        end
+    end
+    for _, d in ipairs(list) do
+        L.remote(d, false)
     end
     on(St.liveConns, prop(ReplicatedStorage, "DescendantAdded"), function(d)
-        L.remote(d)
+        L.remote(d, true)
     end, "rs descendant")
 end
 
@@ -1580,31 +1804,48 @@ function L.outHook()
         local gnm, cc = getnamecallmethod, checkcaller
         local gcs = (type(getcallingscript) == "function" and getcallingscript) or nil
         local old, fallback
+        -- ambil __namecall asli SEBELUM hook (cadangan kalau hookmetamethod tidak mengembalikan fungsi)
         if type(getrawmetatable) == "function" then
             local okM, mt = pcall(getrawmetatable, game)
             if okM and type(mt) == "table" then
-                fallback = rawget(mt, "__namecall")
+                local okR, f = pcall(rawget, mt, "__namecall")
+                if okR and type(f) == "function" then
+                    fallback = f
+                end
             end
         end
         local hook = function(self, ...)
             local sink = hs.sink
             if sink then
-                local m = gnm()
+                -- fungsi executor di-pcall: kalau error di sini, SEMUA namecall game ikut gagal
+                local okM, m = pcall(gnm)
                 -- cuma task.defer: task.spawn bakal jalanin sink sekarang juga dan namecall di
                 -- dalamnya (GetFullName dll) menimpa method yang mau dipanggil old().
                 local defer = task.defer
-                if defer and (m == "FireServer" or m == "InvokeServer") and not cc() then
-                    local caller = nil
-                    if gcs then
-                        local okC, sc = pcall(gcs)
-                        if okC then
-                            caller = sc
+                if okM and defer and (m == "FireServer" or m == "InvokeServer") then
+                    local okC, isExec = pcall(cc)
+                    if okC and not isExec then
+                        local caller = nil
+                        if gcs then
+                            local okS, sc = pcall(gcs)
+                            if okS then
+                                caller = sc
+                            end
                         end
+                        pcall(defer, sink, self, m, caller, table.pack(...))
                     end
-                    pcall(defer, sink, self, m, caller, table.pack(...))
                 end
             end
-            return (old or fallback)(self, ...)
+            local orig = old or fallback
+            if orig then
+                return orig(self, ...)
+            end
+            -- tidak ada __namecall asli sama sekali: panggil lewat __index (bukan namecall) biar game tetap jalan
+            local okM2, m2 = pcall(gnm)
+            if okM2 and type(m2) == "string" then
+                return self[m2](self, ...)
+            end
+            return nil
         end
         if type(newcclosure) == "function" then
             local okW, wrapped = pcall(newcclosure, hook)
@@ -1619,6 +1860,12 @@ function L.outHook()
         end
         old = (type(res) == "function" and res) or fallback
         hs.installed = true
+        hs.noOrig = (old == nil)
+    end
+    if hs.noOrig then
+        -- hook sudah terpasang dan tidak bisa dicabut; logging dimatikan, hook cuma meneruskan via __index
+        St.outStatus = "off (hookmetamethod gave no original __namecall; hook only passes calls through)"
+        return
     end
     local sinkFn = function(remote, method, caller, args)
         if not St.live then
@@ -1668,11 +1915,14 @@ function L.spawn()
         if not (isA(d, "BasePart") or isA(d, "Model") or isA(d, "Tool")) then
             return
         end
-        if playerOf(d) then
+        -- tool yang dipegang sudah dicatat TOOL; part lain di karakter (darah, luka tusuk) tetap dicatat
+        local owner = playerOf(d)
+        if owner and isA(d, "Tool") then
             return
         end
         local a = attrsInline(d, 12)
-        emit("SPAWN", "SPAWN:" .. ln, d.Name .. " [" .. d.ClassName .. "] at " .. posOf(d) .. " in " .. fullName(prop(d, "Parent")) .. (a ~= "" and (" {" .. a .. "}") or ""))
+        emit("SPAWN", "SPAWN:" .. ln, d.Name .. " [" .. d.ClassName .. "] at " .. posOf(d) .. " in " .. fullName(prop(d, "Parent"))
+            .. (owner and (" [" .. pname(owner) .. "]") or "") .. (a ~= "" and (" {" .. a .. "}") or ""))
     end, "spawn")
 end
 
@@ -1711,6 +1961,9 @@ function L.map()
 end
 
 -- Diff teks PlayerGui yang kelihatan (cuma teks baru / berubah).
+-- UI template (daftar pemain / vote / role) sering punya banyak elemen dengan full name SAMA, jadi per
+-- full name disimpan himpunan teks: teks dianggap baru kalau belum ada di himpunan scan sebelumnya.
+-- (Tidak di-key per Instance: daftar yang dibangun ulang tiap update bakal ke-log ulang semua.)
 function L.guiScan()
     local pg = childOfClass(LocalPlayer, "PlayerGui")
     if not pg then
@@ -1724,20 +1977,38 @@ function L.guiScan()
     for _, it in ipairs(items) do
         local key = fullName(it[1])
         local txt = it[2]
-        cur[key] = txt
-        if prev and prev[key] ~= txt then
-            local old = prev[key]
-            local skip = false
-            -- timer yang cuma ganti angka: maksimal sekali per 15 detik
-            if old and string.gsub(old, "%d", "#") == string.gsub(txt, "%d", "#") then
-                if t - (St.guiTick[key] or -1000) < 15 then
-                    skip = true
-                else
-                    St.guiTick[key] = t
+        local set = cur[key]
+        if not set then
+            -- teks bisa sama dengan nama pemain: tandai own() biar tidak muncul di probe getgc
+            set = own({ t = own({}), s = own({}) })
+            cur[key] = set
+        end
+        if not set.t[txt] then
+            local shape = string.gsub(txt, "%d", "#")
+            set.t[txt] = true
+            set.s[shape] = true
+            local old = prev and prev[key]
+            if prev and not (old and old.t[txt]) then
+                local skip = false
+                -- timer / hitungan yang cuma ganti angka: maksimal sekali per 15 detik per bentuk teks
+                if old and old.s[shape] then
+                    local tk = key .. "\n" .. shape
+                    if t - (St.guiTick[tk] or -1000) < 15 then
+                        skip = true
+                    else
+                        if St.guiTick[tk] == nil then
+                            St.guiTickN = (St.guiTickN or 0) + 1
+                            if St.guiTickN > 4000 then
+                                St.guiTick = own({})
+                                St.guiTickN = 1
+                            end
+                        end
+                        St.guiTick[tk] = t
+                    end
                 end
-            end
-            if not skip then
-                fresh[#fresh + 1] = { key, txt }
+                if not skip then
+                    fresh[#fresh + 1] = { key, txt }
+                end
             end
         end
     end
@@ -1860,7 +2131,7 @@ local SECTIONS = {
             end
             out(string.format("  %-22s %s", e[1] .. ":", s))
         end
-        local getId, setId = idFns()
+        local getId = idFns()
         if getId then
             local ok, id = pcall(getId)
             out("thread identity: " .. (ok and tostring(id) or ("error " .. tostring(id))))
@@ -1883,8 +2154,8 @@ local SECTIONS = {
         out("require test module: " .. fullName(m) .. " (" .. tostring(how) .. ")")
         local okC, resC = timedRequire(m, nil, 3)
         out("  require @current identity: " .. reqDesc(okC, resC))
-        local okI, resI = timedRequire(m, 2, 3)
-        out("  require @identity 2: " .. reqDesc(okI, resI) .. (setId and "" or " (no setthreadidentity: same as current)"))
+        local okI, resI, usedI = timedRequire(m, 2, 3)
+        out("  require @identity 2: " .. reqDesc(okI, resI) .. ((usedI ~= "2") and (" (actually ran at identity " .. tostring(usedI) .. ")") or ""))
         if okC and okI then
             out("  same result object: " .. tostring(resC == resI))
         end
@@ -1932,8 +2203,10 @@ local SECTIONS = {
         end
     end },
 
-    { "modules", "MODULE PROBE (require at identity 2)", function(out, X)
+    { "modules", "MODULE PROBE (require at identity 2 when setthreadidentity exists)", function(out, X)
         out("WARNING: requiring game modules runs their code if this VM has not loaded them yet; controllers can have side effects.")
+        local _, setIdM = idFns()
+        out("require mode: " .. (setIdM and "identity 2 via setthreadidentity (label shows the identity actually used)" or "current identity (no setthreadidentity)"))
         local paths, seenPath = {}, {}
         for _, p in ipairs(MODULE_PATHS) do
             if not seenPath[p] then
@@ -1965,9 +2238,13 @@ local SECTIONS = {
                     out("  not a ModuleScript; " .. #kids .. " children: " .. classSummary(kids, 1))
                 elseif X.opts.noRequire then
                     out("  require: skipped (noRequire)")
+                elseif not isConfigModule(inst) then
+                    -- Di Xeno require modul client MENJALANKAN ULANG kodenya (error di tengah jalan) dan
+                    -- bisa merusak kontrol game (tombol stab/tembak hilang). Lihat section DECOMPILE.
+                    out("  require: skipped (not a shared.configurations data module; requiring it re-runs game code)")
                 else
-                    local ok, res = timedRequire(inst, 2, 3)
-                    out("  require@2: " .. reqDesc(ok, res))
+                    local ok, res, used = timedRequire(inst, 2, 3)
+                    out("  require@" .. tostring(used) .. ": " .. reqDesc(ok, res))
                     if ok and type(res) == "table" then
                         local budget = { n = 0, max = 300, cut = false }
                         dumpTable(out, res, "    ", 3, budget, {})
@@ -2010,7 +2287,11 @@ local SECTIONS = {
         local n, cap = 0, 500
         local roots = { ReplicatedStorage, ReplicatedFirst, StarterPlayer, childOfClass(LocalPlayer, "PlayerScripts") }
         local lists = {}
-        for _, r in ipairs(roots) do
+        for i = 1, 4 do
+            lists[#lists + 1] = descendants(roots[i])
+        end
+        -- animasi di dalam Tool (StarterPack / Lighting / Backpack tiap pemain); karakter ada di Workspace
+        for _, r in ipairs(toolAnimRoots()) do
             lists[#lists + 1] = descendants(r)
         end
         lists[#lists + 1] = X.ws()
@@ -2067,8 +2348,20 @@ local SECTIONS = {
                             end
                             kids[#kids + 1] = c.Name .. "[" .. c.ClassName .. "]"
                         end
+                        local anims = {}
+                        for _, ad in ipairs(descendants(d)) do
+                            if ad.ClassName == "Animation" then
+                                if #anims >= 8 then
+                                    anims[#anims + 1] = "..."
+                                    break
+                                end
+                                addAnim(ad)
+                                anims[#anims + 1] = ad.Name .. "=" .. tostring(prop(ad, "AnimationId"))
+                            end
+                        end
                         local a = attrsInline(d, 12)
-                        out("[" .. s[1] .. "] " .. fullName(d) .. " tip=" .. q(tostring(prop(d, "ToolTip") or "")) .. (a ~= "" and (" {" .. a .. "}") or "") .. " children: " .. table.concat(kids, ", "))
+                        out("[" .. s[1] .. "] " .. fullName(d) .. " tip=" .. q(tostring(prop(d, "ToolTip") or "")) .. (a ~= "" and (" {" .. a .. "}") or "") .. " children: " .. table.concat(kids, ", ")
+                            .. (#anims > 0 and (" anims: " .. table.concat(anims, ", ")) or ""))
                     end
                 end
             end
@@ -2241,6 +2534,7 @@ local SECTIONS = {
             end
             local okA, a = pcall(d.GetAttributes, d)
             if okA and type(a) == "table" then
+                own(a)
                 for k, v in pairs(a) do
                     if not acount[k] then
                         acount[k] = 0
@@ -2306,7 +2600,8 @@ local SECTIONS = {
             out("getgc returned " .. typeof(list))
             return
         end
-        local pset = {}
+        -- own(): pset snapshot sebelumnya yang belum di-GC jangan sampai ke-scan sebagai "tabel game"
+        local pset = own({})
         for _, p in ipairs(Players:GetPlayers()) do
             pset[p] = true
             pset[pname(p)] = true
@@ -2438,7 +2733,12 @@ local SECTIONS = {
             end
             local parts = {}
             for i = 2, box.res.n do
-                parts[#parts + 1] = show(box.res[i])
+                local okS, str = pcall(ser, box.res[i], 5)
+                str = okS and tostring(str) or show(box.res[i])
+                if #str > 4000 then
+                    str = string.sub(str, 1, 4000) .. " ...(cut)"
+                end
+                parts[#parts + 1] = str
             end
             return true, (#parts > 0 and table.concat(parts, ", ") or "(no values)")
         end
@@ -2505,6 +2805,67 @@ local SECTIONS = {
                 out(string.format("  %s.%s -> %s", roleFolder.Name, r.Name, tostring(text)))
             else
                 out(string.format("  %s.%s (%s, not called)", roleFolder.Name, r.Name, r.ClassName))
+            end
+        end
+    end },
+    { "decompile", "DECOMPILE (client role modules; read-only, nothing is executed)", function(out, X)
+        if X.opts.noDecompile then
+            out("(decompile skipped)")
+            return
+        end
+        if type(decompile) ~= "function" then
+            out("decompile: not available on this executor")
+            return
+        end
+        local TARGETS = {
+            "client.controllers.roleController.roles.mafia",
+            "client.controllers.roleController.roles.doctor",
+            "client.controllers.roleController",
+            "client.controllers.interactionController",
+        }
+        for _, path in ipairs(TARGETS) do
+            local inst = resolve(path, X.desc)
+            out("")
+            out("--- " .. path .. " -> " .. (inst and fullName(inst) or "not found"))
+            if inst then
+                local box = { done = false }
+                task.spawn(function()
+                    local ok, src = pcall(decompile, inst)
+                    box.ok, box.src, box.done = ok, src, true
+                end)
+                local waited = 0
+                while not box.done and waited < 15 do
+                    local dt = task.wait(0.1)
+                    waited = waited + ((type(dt) == "number" and dt > 0) and dt or 0.1)
+                end
+                if not box.done then
+                    out("  decompile: timeout (15s)")
+                elseif not box.ok or type(box.src) ~= "string" then
+                    out("  decompile: error " .. tostring(box.src))
+                else
+                    local lines = {}
+                    for line in string.gmatch(box.src .. "\n", "([^\n]*)\n") do
+                        lines[#lines + 1] = line
+                    end
+                    -- Ringkasan: baris yang memanggil remote / handler penting (+-3 baris konteks)
+                    out("  lines: " .. #lines .. "  (key calls below, then source)")
+                    for i, line in ipairs(lines) do
+                        local l = string.lower(line)
+                        if string.find(l, "invokeserver", 1, true) or string.find(l, "fireserver", 1, true)
+                            or string.find(l, "onstab", 1, true) or string.find(l, "onshoot", 1, true)
+                            or string.find(l, "onheal", 1, true) or string.find(l, "handlemafiastab", 1, true)
+                            or string.find(l, "settargetcharacter", 1, true) or string.find(l, "bindaction", 1, true) then
+                            out(string.format("  >> %d: %s", i, line))
+                        end
+                    end
+                    local cap = math.min(#lines, 1500)
+                    for i = 1, cap do
+                        out(string.format("  %4d| %s", i, lines[i]))
+                    end
+                    if #lines > cap then
+                        out("  ... (" .. (#lines - cap) .. " more lines cut)")
+                    end
+                end
             end
         end
     end },
@@ -2618,7 +2979,8 @@ function API.startLive()
     end
     local t = now()
     St.tGui, St.tTags, St.tFlush = t, t, t
-    push(stamp() .. " LIVE hooks: " .. #St.liveConns .. " connections, remote out: " .. tostring(St.outStatus))
+    push(stamp() .. " LIVE hooks: " .. #St.liveConns .. " connections, remote in: " .. St.remoteN .. " hooked, " .. L.remoteWaiting()
+        .. " waiting for a game listener, remote out: " .. tostring(St.outStatus))
     touchUI()
     return true, "started"
 end
@@ -2639,6 +3001,7 @@ function API.stopLive()
     St.hk = own(setmetatable({}, { __mode = "k" }))
     St.tagHooked = own({})
     St.tagN, St.remoteN = 0, 0
+    St.remoteWait = own(setmetatable({}, { __mode = "k" }))
     St.guiPrev = nil
     local hs = genv.NoctisENIX_InspectorHook
     if type(hs) == "table" and hs.sink == St.sinkFn then
@@ -2673,6 +3036,8 @@ function API.text()
     add("live log: " .. St.count .. " lines kept, " .. St.dropped .. " oldest dropped (cap " .. St.cap .. "), running: " .. tostring(St.live))
     add("remote out hook: " .. tostring(St.outStatus or "not started"))
     add("note: the module probe requires game ModuleScripts; requiring controllers can have side effects.")
+    add("note: REMOTE_IN connects a remote only once the game listens to it (getconnections) or " .. REMOTE_GRACE
+        .. "s after it appears, so events queued for late game listeners still reach the game.")
     add("")
     if #St.snaps == 0 then
         add("(no snapshot taken)")
@@ -2803,6 +3168,9 @@ API._test = {
     state = function()
         return St
     end,
+    mount = function(g)
+        return UI.mount(g)
+    end,
 }
 
 ----------------------------------------------------------------------
@@ -2840,7 +3208,9 @@ function UI.mount(gui)
     end
     for _, t in ipairs(targets) do
         local ok = pcall(setp, gui, "Parent", t)
-        if ok and prop(gui, "Parent") == t then
+        -- jangan bandingkan Parent == t: CoreGui / gethui() hasil cloneref tidak == referensi kanonik
+        -- yang dikembalikan .Parent, padahal parenting-nya berhasil
+        if ok and prop(gui, "Parent") ~= nil then
             return t
         end
     end
@@ -2981,11 +3351,21 @@ on(St.uiConns, prop(RunService, "Heartbeat"), function()
     if St.live then
         if t - St.tGui >= 2 then
             St.tGui = t
-            L.guiScan()
+            local okG, errG = pcall(L.guiScan)
+            if not okG then
+                noteErr("gui scan", errG)
+            end
+            local okR, errR = pcall(L.remoteTick)
+            if not okR then
+                noteErr("remote wait", errR)
+            end
         end
         if t - St.tTags >= 10 then
             St.tTags = t
-            L.tags()
+            local okT, errT = pcall(L.tags, true)
+            if not okT then
+                noteErr("tag rescan", errT)
+            end
         end
         if t - St.tFlush >= 1 then
             St.tFlush = t

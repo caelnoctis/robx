@@ -309,6 +309,27 @@ do
     RunService.Heartbeat:Fire(0.016)
     check(h.WalkSpeed == 4, "speed re-applied each Heartbeat")
 
+    -- speed hack script utama nulis WalkSpeed di Heartbeat juga: Stepped (tepat sebelum physics) menang
+    h.WalkSpeed = 22
+    RunService.Stepped:Fire(0, 0.016)
+    check(h.WalkSpeed == 4, "crawl speed re-applied in Stepped before physics: " .. tostring(h.WalkSpeed))
+
+    -- track kita di-Stop dari luar (Animate / equip tool / ganti state) -> diputar lagi dalam 0.25 s
+    i:Stop()
+    RunService.Heartbeat:Fire(0.3)
+    check(i.IsPlaying and St.Crawl.mode == "idle", "idle track restarted after an external Stop")
+    h.MoveDirection = v3(1, 0, 0)
+    RunService.Heartbeat:Fire(0.016)
+    c:Stop()
+    RunService.Heartbeat:Fire(0.016)
+    check(not c.IsPlaying, "restart only on the 0.25 s check, not every frame")
+    RunService.Heartbeat:Fire(0.3)
+    check(c.IsPlaying and St.Crawl.mode == "move", "crawl track restarted after an external Stop")
+    h.MoveDirection = v3(0, 0, 0)
+    RunService.Heartbeat:Fire(0.016)
+    RunService.Heartbeat:Fire(0.2)
+    check(i.IsPlaying and not c.IsPlaying, "back to idle")
+
     -- beneran downed di tengah fake crawl -> pause, game yang atur
     Me.Character:SetAttribute("Downed", true)
     RunService.Heartbeat:Fire(0.3)
@@ -326,6 +347,21 @@ do
     check(h.WalkSpeed == 16, "WalkSpeed restored: " .. tostring(h.WalkSpeed))
     RunService.Heartbeat:Fire(0.016)
     check(h.WalkSpeed == 16, "no Heartbeat work after off")
+
+    -- crawlKeepSpeed dinyalakan DI TENGAH crawl -> speed normal langsung balik
+    A.setFakeCrawl(true)
+    RunService.Heartbeat:Fire(0.016)
+    check(h.WalkSpeed == 4, "crawl speed before the keepSpeed toggle")
+    ctx.S.crawlKeepSpeed = true
+    RunService.Heartbeat:Fire(0.016)
+    check(h.WalkSpeed == 16, "crawlKeepSpeed turned on mid-crawl restores speed: " .. tostring(h.WalkSpeed))
+    RunService.Stepped:Fire(0, 0.016)
+    check(h.WalkSpeed == 16, "Stepped does not force speed under crawlKeepSpeed")
+    ctx.S.crawlKeepSpeed = nil
+    RunService.Heartbeat:Fire(0.016)
+    check(h.WalkSpeed == 4, "crawl speed again once crawlKeepSpeed is off")
+    A.setFakeCrawl(false)
+    check(h.WalkSpeed == 16, "restored after the keepSpeed round trip")
 
     -- crawlKeepSpeed
     ctx.S.crawlKeepSpeed = true
@@ -387,7 +423,7 @@ do
     modules["assets.animations.player1"] = nil
     -- fallback: Animation di dalam tool di Backpack (bukan ReplicatedStorage)
     local knifeTool = Me:FindFirstChildOfClass("Backpack"):FindFirstChild("Knife")
-    local toolAnim = __mk("Animation", { Name = "gunShot", AnimationId = "rbxassetid://5555" }, knifeTool)
+    local toolAnim = __mk("Animation", { Name = "Glock", AnimationId = "rbxassetid://5555" }, knifeTool)
     T = T + 11
     ok, msg = A.fakeShot()
     check(ok == true and St.Shot.tracks.shot.track.Animation == toolAnim, "anim found in Backpack tool: " .. tostring(msg))
@@ -395,8 +431,31 @@ do
     T = T + 11
     clearDelays()
 
+    -- substring di ReplicatedStorage (KnifeIdle) tidak boleh menang dari nama exact di sumber lain (Stab di tool)
+    addAnim("KnifeIdle", 6661)
+    local stabInTool = __mk("Animation", { Name = "KnifeSwing", AnimationId = "rbxassetid://6662" }, knifeTool)
+    ok, msg = A.fakeStab()
+    check(ok == true and msg == "Played KnifeSwing", "exact name in Backpack tool beats substring in ReplicatedStorage: " .. tostring(msg))
+    stabInTool:Destroy()
+    T = T + 11
+    clearDelays()
+    ok, msg = A.fakeStab()
+    check(ok == false and msg == "Stab animation not found in this game version.", "idle pose never played as a stab: " .. tostring(msg))
+    animFolder:FindFirstChild("KnifeIdle"):Destroy()
+    T = T + 11
+    clearDelays()
+
+    -- seatedDied.GunShot = animasi MATI di kursi; fake gunshot tidak boleh pernah memutar ini
+    addAnim("GunShot", 444)
+    T = T + 11
+    clearDelays()
+    ok, msg = A.fakeShot()
+    check(ok == false, "death animation GunShot is never used as a fake shot: " .. tostring(msg))
+    animFolder:FindFirstChild("GunShot"):Destroy()
+    T = T + 11
+    clearDelays()
     addAnim("KnifeSwing", 222)
-    addAnim("gunShot", 333)
+    addAnim("Glock", 333)
 
     local logStart = #__animLog
     ok, msg = A.fakeStab()
@@ -404,7 +463,7 @@ do
     local e = __animLog[logStart + 1]
     check(e and e[1] == "play" and e[2] == "KnifeSwing", "KnifeSwing played")
     local tr = St.Shot.tracks.stab.track
-    check(tr.Priority == Enum.AnimationPriority.Action and tr.Looped == false, "one-shot track: Action, not looped")
+    check(tr.Priority == Enum.AnimationPriority.Action4 and tr.Looped == false, "one-shot track: Action4 (above crawl), not looped")
     check(#__delays == 1, "stop scheduled")
     ok, msg = A.fakeStab()
     check(ok == false and msg == "Too fast, wait a moment.", "cooldown: " .. tostring(msg))
@@ -422,7 +481,7 @@ do
     check(not tr.IsPlaying, "stopped after Length")
 
     ok, msg = A.fakeShot()
-    check(ok == true and msg == "Played gunShot", "fake shot: " .. tostring(msg))
+    check(ok == true and msg == "Played Glock", "fake shot: " .. tostring(msg))
     check(__remoteLog == nil or #__remoteLog == 0, "no remotes fired")
     check(Me.Character:FindFirstChild("Knife") == nil, "no tool equipped")
     T = T + 1
@@ -488,6 +547,21 @@ do
     RunService.Heartbeat:Fire(0.016)
     check(#mids == 0 and near(pos(Me), v3(0, 5, 0)), "paused while seated")
     h.SeatPart = nil
+
+    -- game memindahkan kita di antara Heartbeat dan render (kursi meeting / reset ronde): posisi baru dipakai
+    rsSig.Wait = function()
+        setPos(Me, 100, 2, 0)
+    end
+    RunService.Heartbeat:Fire(0.016)
+    check(near(pos(Me), v3(100, 2, 0)), "server teleport during a ghost frame is kept: " .. fmt(pos(Me)))
+    check(St.Ghost.pending == nil, "pending frame dropped")
+    setPos(Me, 0, 5, 0)
+    rsSig.Wait = function()
+        mids[#mids + 1] = pos(Me)
+    end
+    RunService.Heartbeat:Fire(0.016)
+    check(near(pos(Me), v3(0, 5, 0)), "normal restore still works afterwards: " .. fmt(pos(Me)))
+    mids = {}
 
     -- dimatikan di tengah frame -> tetap dibalikin
     rsSig.Wait = function()
@@ -695,11 +769,13 @@ do
     check(near(pos(Me), origin), "returned even when nothing registered")
     knife.Parent = Me:FindFirstChildOfClass("Backpack")
 
-    -- g) tidak ada apa-apa
+    -- g) tidak ada apa-apa -> tidak teleport sama sekali (tidak ada pin Heartbeat)
     knife.Parent = nil
+    local connsBefore = #__conns
     ok, msg = A.tpStabReturn()
     check(ok == false and msg == "The stab handler has not loaded yet -- try again in a second.", "nothing available: " .. tostring(msg))
     check(near(pos(Me), origin), "returned when nothing available")
+    check(#__conns == connsBefore, "no teleport / pin when nothing can be tried")
 
     -- h) ProximityPrompt (fireproximityprompt)
     local prompt = __mk("ProximityPrompt", { ActionText = "Stab", Enabled = true }, root(Alice))
@@ -768,7 +844,182 @@ do
     A.setGhost(false)
     rsSig.Wait = defaultWait
     Alice.Character:SetAttribute("Downed", nil)
-    modules["client.controllers.roleController.roles.mafia"] = nil
+
+    local MAFIA = "client.controllers.roleController.roles.mafia"
+    -- l) handler ada tapi error, tidak ada strategi lain -> "No stab registered", bukan "belum ke-load"
+    knife.Parent = nil
+    modules[MAFIA] = {
+        handleMafiaStab = function()
+            error("on cooldown")
+        end,
+    }
+    ok, msg = A.tpStabReturn()
+    check(ok == false and msg == "No stab registered; the server may still be counting your cooldown.", "handler error -> stabNone: " .. tostring(msg))
+    check(A.status().lastMethod == "handler:handleMafiaStab (errored)", "lastMethod errored: " .. tostring(A.status().lastMethod))
+    check(near(pos(Me), origin), "returned after handler error")
+
+    -- m) handler return false -> dipanggil SEKALI saja, pesan stabNone
+    local falseCalls = 0
+    local MF = {}
+    function MF:handleMafiaStab()
+        falseCalls = falseCalls + 1
+        return false
+    end
+    modules[MAFIA] = MF
+    ok, msg = A.tpStabReturn()
+    check(ok == false and msg == "No stab registered; the server may still be counting your cooldown.", "handler false -> stabNone: " .. tostring(msg))
+    check(falseCalls == 1, "handler returning false is not re-called with other args: " .. tostring(falseCalls))
+    check(A.status().lastMethod == "handler:handleMafiaStab (refused)", "lastMethod refused: " .. tostring(A.status().lastMethod))
+
+    -- n) handler di tabel modul diam-diam tidak melakukan apa-apa -> lanjut ke Knife yang beneran kena
+    knife.Parent = Me:FindFirstChildOfClass("Backpack")
+    local noopCalls = 0
+    modules[MAFIA] = {
+        handleMafiaStab = function()
+            noopCalls = noopCalls + 1
+        end,
+    }
+    local kConn = knife.Activated:Connect(function()
+        Alice.Character:SetAttribute("Downed", true)
+    end)
+    ok, msg = A.tpStabReturn()
+    check(ok == true and msg == "Stab landed on AliceD", "silent handler falls through to the knife: " .. tostring(msg))
+    check(noopCalls == 1 and A.status().lastMethod == "tool:Knife", "lastMethod after silent handler: " .. tostring(A.status().lastMethod))
+    kConn:Disconnect()
+    Alice.Character:SetAttribute("Downed", nil)
+    knife.Parent = Me:FindFirstChildOfClass("Backpack")
+    -- handler yang langsung kena: knife tidak ikut dipakai
+    local actCount = 0
+    kConn = knife.Activated:Connect(function()
+        actCount = actCount + 1
+    end)
+    modules[MAFIA] = {
+        handleMafiaStab = function()
+            Alice.Character:SetAttribute("Downed", true)
+        end,
+    }
+    ok, msg = A.tpStabReturn()
+    check(ok and actCount == 0 and A.status().lastMethod == "handler:handleMafiaStab", "confirmed handler stops the chain: " .. tostring(actCount))
+    kConn:Disconnect()
+    Alice.Character:SetAttribute("Downed", nil)
+
+    -- o) handler dicari SEBELUM teleport; ada jeda tsrPre setelah teleport
+    local reqPos = nil
+    local oldReq = ctx.Game.require
+    ctx.Game.require = function(path)
+        if path == MAFIA then
+            reqPos = pos(Me)
+        end
+        return oldReq(path)
+    end
+    local waits = {}
+    local oldWait = task.wait
+    task.wait = function(t)
+        waits[#waits + 1] = t
+        return 0
+    end
+    ok, msg = A.tpStabReturn()
+    task.wait = oldWait
+    ctx.Game.require = oldReq
+    check(ok and reqPos ~= nil and near(reqPos, origin), "handler resolved before teleporting: " .. fmt(reqPos))
+    local sawPre = false
+    for _, w in ipairs(waits) do
+        if w == 0.12 then
+            sawPre = true
+        end
+    end
+    check(sawPre, "tsrPre delay after the teleport")
+    Alice.Character:SetAttribute("Downed", nil)
+
+    -- p) prompt pemain lain / NPC dalam 12 stud tidak boleh dipakai; prop dunia boleh
+    knife.Parent = nil
+    modules[MAFIA] = nil
+    local bobChar = Bob.Character
+    bobChar.Parent = workspace
+    setPos(Bob, 20, 0, 0)
+    local alicePrompt = __mk("ProximityPrompt", { ActionText = "Stab", Enabled = false }, root(Alice))
+    local bobPrompt = __mk("ProximityPrompt", { ActionText = "Stab", Enabled = true }, root(Bob))
+    local npc = __mk("Model", { Name = "Dummy" }, workspace)
+    __mk("Humanoid", nil, npc)
+    __mk("ProximityPrompt", { ActionText = "Kill", Enabled = true }, __mk("Part", { Name = "Torso", CFrame = CFrame.new(16, 0, 0) }, npc))
+    local worldKnife = __mk("Part", { Name = "KnifePickup", CFrame = CFrame.new(17, 0, 0) }, workspace)
+    __mk("ProximityPrompt", { ActionText = "Pick up", ObjectText = "Knife", Enabled = true }, worldKnife)
+    local firedP = {}
+    fireproximityprompt = function(pr)
+        firedP[#firedP + 1] = pr
+        if pr == bobPrompt then
+            Bob.Character:SetAttribute("Downed", true)
+        end
+    end
+    T = T + 6
+    ok, msg = A.tpStabReturn()
+    check(#firedP == 0 and not Bob.Character:GetAttribute("Downed"), "no bystander / NPC / item prompt fired: " .. tostring(#firedP))
+    check(ok == false and msg == "The stab handler has not loaded yet -- try again in a second.", "nothing usable -> not loaded: " .. tostring(msg))
+    local prop = __mk("Part", { Name = "Altar", CFrame = CFrame.new(18, 0, 0) }, workspace)
+    local propPrompt = __mk("ProximityPrompt", { ActionText = "Stab", Enabled = true }, prop)
+    fireproximityprompt = function(pr)
+        firedP[#firedP + 1] = pr
+        if pr == propPrompt then
+            Alice.Character:SetAttribute("Downed", true)
+        end
+    end
+    T = T + 6
+    ok, msg = A.tpStabReturn()
+    check(ok and #firedP == 1 and firedP[1] == propPrompt, "world prop prompt within 12 studs used: " .. tostring(msg))
+    Alice.Character:SetAttribute("Downed", nil)
+    fireproximityprompt = nil
+    prop:Destroy()
+    npc:Destroy()
+    worldKnife:Destroy()
+    alicePrompt:Destroy()
+    bobPrompt:Destroy()
+    bobChar.Parent = nil
+    setPos(Bob, 25, 0, 0)
+    T = T + 6
+
+    -- q) target keluar / karakternya hilang selama trip -> bukan "Stab landed"
+    local aliceChar = Alice.Character
+    modules[MAFIA] = {
+        handleMafiaStab = function()
+            Alice.Character = nil
+        end,
+    }
+    ok, msg = A.tpStabReturn()
+    check(ok == false and msg == "No stab registered; the server may still be counting your cooldown.", "vanished target is not a landed stab: " .. tostring(msg))
+    check(near(pos(Me), origin), "returned after target vanished")
+    Alice.Character = aliceChar
+    -- Health 0 di karakter yang sama tetap dihitung
+    modules[MAFIA] = {
+        handleMafiaStab = function()
+            hum(Alice).Health = 0
+        end,
+    }
+    ok, msg = A.tpStabReturn()
+    check(ok == true and msg == "Stab landed on AliceD", "Health 0 counts as landed: " .. tostring(msg))
+    hum(Alice).Health = 100
+    A.setTarget(Alice)
+
+    -- r) Bring aktif saat TSR: target ditaruh di posisi aslinya selama aksi, bring off menulis balik posisi asli
+    A.setBring(true)
+    rsSig:Fire(0.016)
+    check(near(pos(Alice), v3(0, 0, -6)), "Alice brought in front of me: " .. fmt(pos(Alice)))
+    local distSeen
+    modules[MAFIA] = {
+        handleMafiaStab = function()
+            rsSig:Fire(0.016)
+            distSeen = (pos(Me) - pos(Alice)).Magnitude
+            Alice.Character:SetAttribute("Downed", true)
+        end,
+    }
+    ok, msg = A.tpStabReturn()
+    check(ok and distSeen and math.abs(distSeen - 3) < 0.01, "target at its real spot during TSR (client view): " .. tostring(distSeen))
+    rsSig:Fire(0.016)
+    check(near(pos(Alice), v3(0, 0, -6)), "bring resumes after TSR")
+    A.setBring(false)
+    check(near(pos(Alice), v3(15, 0, 0)), "bring off writes the real CFrame back: " .. fmt(pos(Alice)))
+    Alice.Character:SetAttribute("Downed", nil)
+    knife.Parent = Me:FindFirstChildOfClass("Backpack")
+    modules[MAFIA] = nil
     A.setTarget(nil)
 end
 section("tp-stab-return")
@@ -814,6 +1065,24 @@ do
     check(D.dist and math.abs(D.dist - 3) < 0.01, "stood next to downed player")
     check(near(pos(Me), origin), "returned after heal")
 
+    -- healthChanged bukan "heal" (kata utuh); handle* didahulukan dari nama lain
+    Cara.Character:SetAttribute("Downed", true)
+    local D2 = { called = {} }
+    function D2:healthChanged()
+        self.called[#self.called + 1] = "healthChanged"
+    end
+    function D2:revivePlayer()
+        self.called[#self.called + 1] = "revivePlayer"
+    end
+    function D2:handleDoctorSave()
+        self.called[#self.called + 1] = "handleDoctorSave"
+        Cara.Character:SetAttribute("Downed", false)
+    end
+    modules["client.controllers.roleController.roles.doctor"] = D2
+    ok, msg = A.tpHealReturn()
+    check(ok == true and table.concat(D2.called, ",") == "handleDoctorSave", "only handleDoctorSave called: " .. table.concat(D2.called, ",") .. " " .. tostring(msg))
+    check(A.status().lastMethod == "handler:handleDoctorSave", "lastMethod D2: " .. tostring(A.status().lastMethod))
+
     -- roleController sendiri (bukan modul doctor): cuma kata heal/revive, pickDisguise tidak boleh terpanggil
     modules["client.controllers.roleController.roles.doctor"] = nil
     local picked = false
@@ -854,8 +1123,51 @@ do
     T = T + 6
     firedList = {}
     ok, msg = A.tpHealReturn()
-    check(ok == false and firedList[1] == pickPrompt and msg == "No heal registered; the server may still be counting your cooldown.", "nearby prompt used, far one ignored: " .. tostring(msg))
-    check(firedList[1] ~= farPrompt, "prompt beyond 12 studs ignored")
+    check(#firedList == 0, "item pickup prompt (Banana) and far prompt never fired: " .. tostring(#firedList))
+    check(ok == false and msg == "The heal handler has not loaded yet -- try again in a second.", "nothing usable for heal: " .. tostring(msg))
+
+    -- "Help" di prop dunia tidak dipakai (kata umum cuma untuk badan target); prompt Revive di pemain lain
+    -- (Dan, dekat Cara) juga tidak; prop dunia "Revive" dalam 12 stud boleh
+    local helpPart = __mk("Part", { Name = "HelpSign", CFrame = CFrame.new(37, 0, 0) }, workspace)
+    __mk("ProximityPrompt", { ActionText = "Help", Enabled = true }, helpPart)
+    local danChar = Dan.Character
+    danChar.Parent = workspace
+    setPos(Dan, 39, 0, 0)
+    local danPrompt = __mk("ProximityPrompt", { ActionText = "Revive", Enabled = true }, root(Dan))
+    T = T + 6
+    firedList = {}
+    ok, msg = A.tpHealReturn()
+    check(#firedList == 0, "Help sign / other player's Revive prompt not fired: " .. tostring(#firedList))
+    local station = __mk("Part", { Name = "ReviveStation", CFrame = CFrame.new(38, 0, 0) }, workspace)
+    local stationPrompt = __mk("ProximityPrompt", { ActionText = "Revive", Enabled = true }, station)
+    fireproximityprompt = function(pr)
+        firedList[#firedList + 1] = pr
+        if pr == stationPrompt then
+            Cara.Character:SetAttribute("Downed", false)
+        end
+    end
+    T = T + 6
+    ok, msg = A.tpHealReturn()
+    check(ok and #firedList == 1 and firedList[1] == stationPrompt, "world Revive prop near the downed player used: " .. tostring(msg))
+    -- "Pick up" / "Help" di badan pemain yang downed tetap boleh
+    Cara.Character:SetAttribute("Downed", true)
+    station:Destroy()
+    local bodyPick = __mk("ProximityPrompt", { ActionText = "Help up", Enabled = true }, root(Cara))
+    fireproximityprompt = function(pr)
+        firedList[#firedList + 1] = pr
+        if pr == bodyPick then
+            Cara.Character:SetAttribute("Downed", false)
+        end
+    end
+    firedList = {}
+    T = T + 6
+    ok, msg = A.tpHealReturn()
+    check(ok and firedList[1] == bodyPick, "Help prompt on the downed body used: " .. tostring(msg))
+    bodyPick:Destroy()
+    helpPart:Destroy()
+    danPrompt:Destroy()
+    danChar.Parent = nil
+    setPos(Dan, 45, 0, 0)
     fireproximityprompt = nil
     pickPart:Destroy()
     farPart:Destroy()
@@ -914,17 +1226,62 @@ do
     hum(Bob).Health = 100
     setPos(Bob, 25, 0, 0)
     setPos(Me, 0, 0, 0)
-    -- setTarget(nil) mematikan bring
+    -- setTarget(nil) mematikan bring, dengan notifikasi
     A.setTarget(Bob)
     A.setBring(true)
     A.setTarget(nil)
-    check(not A.status().bring, "clearing target turns bring off")
+    check(not A.status().bring and noteHas("Target cleared, bring turned off."), "clearing target turns bring off (notified)")
     -- PlayerRemoving
     A.setTarget(Bob)
     A.setBring(true)
     Players.PlayerRemoving:Fire(Bob)
     check(not A.status().bring and A.getTarget() == nil, "target leaving turns bring off")
     rsSig:Fire(0.016)
+
+    -- off: target diam (tidak ada update replikasi, mis. duduk di kursi anchored) ditulis balik ke posisi asli
+    A.setTarget(Bob)
+    A.setBring(true)
+    rsSig:Fire(0.016)
+    check(near(pos(Bob), v3(0, 0, -6)), "Bob brought: " .. fmt(pos(Bob)))
+    A.setBring(false)
+    check(near(pos(Bob), v3(25, 0, 0)), "bring off writes Bob's real CFrame back: " .. fmt(pos(Bob)))
+    -- replikasi sudah menimpa dengan posisi yang lebih baru: jangan ditimpa posisi lama
+    A.setBring(true)
+    rsSig:Fire(0.016)
+    setPos(Bob, 30, 0, 0)
+    A.setBring(false)
+    check(near(pos(Bob), v3(30, 0, 0)), "newer replicated position kept on off: " .. fmt(pos(Bob)))
+    setPos(Bob, 25, 0, 0)
+    -- ganti target saat bring aktif: bring ikut target baru, target lama balik ke posisi asli
+    A.setBring(true)
+    rsSig:Fire(0.016)
+    local okS, msgS = A.setTarget(Cara)
+    check(okS and msgS == "Target: CaraD" and A.status().bring, "bring stays on when switching target: " .. tostring(msgS))
+    check(near(pos(Bob), v3(25, 0, 0)), "old target restored on switch: " .. fmt(pos(Bob)))
+    rsSig:Fire(0.016)
+    check(near(pos(Cara), v3(0, 0, -6)), "bring follows the new target: " .. fmt(pos(Cara)))
+    ok = A.toTarget()
+    check(ok and near(pos(Me), v3(35, 0, 3)), "toTarget uses Cara's real position: " .. fmt(pos(Me)))
+    A.setBring(false)
+    check(near(pos(Cara), v3(35, 0, 0)), "Cara restored: " .. fmt(pos(Cara)))
+    setPos(Me, 0, 0, 0)
+    A.setTarget(nil)
+
+    -- toDowned: "terdekat" pakai posisi asli, bukan posisi palsu hasil bring
+    setPos(Me, 45, 0, 0)
+    Bob.Character:SetAttribute("Downed", true)
+    Cara.Character:SetAttribute("Downed", true)
+    A.setTarget(Bob)
+    A.setBring(true)
+    rsSig:Fire(0.016)
+    ok, msg = A.toDowned()
+    check(ok and msg == "Teleported to CaraD." and near(pos(Me), v3(35, 0, 3)), "nearest downed by real position: " .. tostring(msg) .. " " .. fmt(pos(Me)))
+    A.setBring(false)
+    Bob.Character:SetAttribute("Downed", nil)
+    Cara.Character:SetAttribute("Downed", nil)
+    setPos(Bob, 25, 0, 0)
+    setPos(Me, 0, 0, 0)
+    A.setTarget(nil)
     -- BindToRenderStep tersedia
     local bound = {}
     __Methods.BindToRenderStep = function(self, name, prio, fn)
@@ -973,6 +1330,8 @@ do
     check(not tracks[1].IsPlaying and not tracks[2].IsPlaying, "tracks stopped by stop")
     local hb = rawget(RunService, "_signals").Heartbeat
     check(#hb.handlers == 0, "no Heartbeat handlers left: " .. tostring(#hb.handlers))
+    local stepped = rawget(RunService, "_signals").Stepped
+    check(stepped ~= nil and #stepped.handlers == 0, "no Stepped handlers left")
     local mids = 0
     rsSig.Wait = function()
         mids = mids + 1
@@ -983,6 +1342,24 @@ do
     check(#__conns > 0, "connections go through ctx.connect")
     local okStop = pcall(A.stop)
     check(okStop, "stop is idempotent")
+
+    -- Unload lewat Janitor: stop() terdaftar di ctx.track sebagai fungsi
+    local janitorFn = nil
+    for _, x in ipairs(__tracked) do
+        if type(x) == "function" then
+            janitorFn = x
+        end
+    end
+    check(janitorFn ~= nil, "stop registered with ctx.track for unload")
+    h.WalkSpeed = 16
+    A.setFakeCrawl(true)
+    A.setGhost(true)
+    check(h.WalkSpeed == 4 and A.status().ghost, "crawl + ghost on before janitor")
+    if janitorFn then
+        janitorFn()
+    end
+    local after = A.status()
+    check(not after.fakeCrawl and not after.ghost and h.WalkSpeed == 16, "janitor function turns everything off")
 end
 section("stop")
 

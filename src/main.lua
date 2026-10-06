@@ -32,7 +32,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.0.0",
+    Version = "2.1.0",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -159,6 +159,7 @@ local S = {
     espHealth = false,
     notifyRoles = true,
     voteAlert = true,
+    showGuesses = false, -- false = cuma role / tim yang PASTI yang ditampilkan
 
     speedOn = false,
     speed = 32,
@@ -190,8 +191,9 @@ local TeamColors = {
     EVIL = Color3.fromRGB(255, 70, 80),
     VEIL = Color3.fromRGB(255, 196, 70),
     TOWN = Color3.fromRGB(80, 225, 130),
+    NEUTRAL = Color3.fromRGB(200, 170, 255),
 }
-local UNKNOWN_COLOR = Color3.fromRGB(225, 225, 235)
+local UNKNOWN_COLOR = Color3.fromRGB(205, 205, 215)
 
 local function teamColor(team)
     return (team and TeamColors[team]) or UNKNOWN_COLOR
@@ -329,13 +331,22 @@ end)()(ctx)
 
 local function intelInfo(p)
     local ok, info = pcall(Intel.info, p)
-    if ok and type(info) == "table" then
-        if type(info.status) ~= "table" then
-            info.status = {}
-        end
-        return info
+    if not (ok and type(info) == "table") then
+        return { status = {} }
     end
-    return { status = {} }
+    local view = {
+        role = info.role,
+        team = info.team,
+        confidence = info.confidence,
+        reason = info.reason,
+        disguise = info.disguise,
+        status = type(info.status) == "table" and info.status or {},
+    }
+    -- Mode ketat (default): tebakan (likely / suspect) nggak ditampilkan sama sekali.
+    if not S.showGuesses and view.confidence ~= "confirmed" then
+        view.role, view.team, view.confidence, view.reason = nil, nil, nil, nil
+    end
+    return view
 end
 
 local function infoTeam(info)
@@ -897,7 +908,7 @@ Pages.settings = UI.tab("Settings", "⚙", "Menu, cursor and session")
 
 -- Visuals ------------------------------------------------------------
 UI.section(Pages.esp, "Player ESP")
-UI.toggle(Pages.esp, "Enable ESP", "Highlights every living player through walls. Red is Evil, gold is the Veil, green is Town, white is not figured out yet.", S.esp, function(v)
+UI.toggle(Pages.esp, "Enable ESP", "Highlights every living player through walls. Red is Evil, gold is the Veil, green is Town, purple is Neutral, grey is not known for sure yet.", S.esp, function(v)
     S.esp = v
     if not v then
         ESP.clear()
@@ -909,8 +920,11 @@ end)
 UI.toggle(Pages.esp, "Names", "Shows the disguise name plus the real @username behind it.", S.espNames, function(v)
     S.espNames = v
 end)
-UI.toggle(Pages.esp, "Team and role tags", 'EVIL TEAM / [MAFIA] style tags. "?" means likely, "??" means suspected.', S.espRoles, function(v)
+UI.toggle(Pages.esp, "Team and role tags", "EVIL TEAM / [MAFIA] style tags. Only roles that are certain are shown.", S.espRoles, function(v)
     S.espRoles = v
+end)
+UI.toggle(Pages.esp, "Show guesses too", 'Also show likely ("?") and suspected ("??") roles. Off = only certain roles.', S.showGuesses, function(v)
+    S.showGuesses = v
 end)
 UI.toggle(Pages.esp, "Status tags", "DOWNED, DETAINED, SILENCED, IN LOCKER, POISONED. Downed players also blink.", S.espStatus, function(v)
     S.espStatus = v
@@ -972,6 +986,19 @@ end, { bind = true, risk = "server" })
 UI.slider(Pages.deception, "Ghost depth", "How far under the map others see you, in studs.", 20, 120, S.ghostDepth, function(v)
     S.ghostDepth = v
 end)
+
+UI.section(Pages.deception, "Meeting")
+local escapeToggle
+escapeToggle = UI.toggle(Pages.deception, "Escape meeting seat", "Gets you out of your seat during meetings so you can walk around while everyone else is stuck at the table. Keeps pulling you out whenever the game seats you.", false, function(v)
+    local ok, msg = Actions.setEscapeSeat(v)
+    if v and not ok then
+        escapeToggle.Set(false, true)
+    end
+    report("Escape meeting seat", ok, msg)
+end, { bind = true, risk = "server" })
+UI.button(Pages.deception, "Stand on the table", "Teleports you on top of the meeting table (gets you out of your seat first).", function()
+    report("Stand on the table", Actions.toTable())
+end, { bind = true, risk = "server", action = "Go" })
 
 -- Teleport -----------------------------------------------------------
 local function targetLabel(p)
@@ -1225,6 +1252,7 @@ end)
 UI.toggle(Pages.settings, "Cursor halo", "Draws a ring under your mouse over the menu so you never lose it.", S.cursorHalo, function(v)
     S.cursorHalo = v
 end)
+UI.note(Pages.settings, "Close the menu (" .. Config.ToggleKey.Name .. ") before you aim a stab or a shot. While it is open the mouse is freed, so the game cannot aim with it.")
 UI.section(Pages.settings, "Game")
 local statusFeed = UI.feed(Pages.settings, "Status", 3)
 UI.section(Pages.settings, "Session")

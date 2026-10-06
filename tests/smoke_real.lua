@@ -132,6 +132,20 @@ hb:Fire(0.3)
 local sr, st = Intel.self()
 check(sr == "Detainer" and st == "TOWN", "server role -> self: " .. tostring(sr) .. "/" .. tostring(st))
 
+-- 6c. Mode ketat: tebakan nggak tampil kecuali "Show guesses too"
+local eve
+for _, p in ipairs(__players) do if p.Name == "Eve" then eve = p end end
+Intel.addEvidence(eve, "Judge", "likely", "test guess")
+ESP.step()
+local eo = ESP.objs[eve]
+check(eo == nil or string.find(eo.tx.Text, "JUDGE", 1, true) == nil, "strict: likely role hidden: " .. (eo and eo.tx.Text or "nil"))
+S.showGuesses = true
+ESP.step()
+eo = ESP.objs[eve]
+check(eo ~= nil and string.find(eo.tx.Text, "[JUDGE ?]", 1, true) ~= nil, "show guesses: likely role with ?: " .. (eo and eo.tx.Text or "nil"))
+S.showGuesses = false
+check(card("Escape meeting seat") ~= nil and card("Stand on the table") ~= nil, "meeting cards present")
+
 -- 7. Unload bersih
 click(control("Unload NoctisENIX", "Action"))
 check(S.alive == false and #Janitor == 0, "unloaded cleanly")

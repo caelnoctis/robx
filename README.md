@@ -16,7 +16,7 @@ Menu: **RightShift** (bisa diganti di Settings). Eksekusi ulang otomatis meng-un
 loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claude/roblox-mafia-noctissenix-1t79fn/NoctisENIX_Inspector.lua"))()
 ```
 
-1. Jalankan **saat sudah di dalam match**, lalu tekan **Snapshot**. Section **GAME NETWORK** memanggil getter baca-saja milik game (role, teamMembers, gamePhase, dan sejenisnya) untuk melihat format balasannya. Remote aksi seperti `onStab` tidak pernah dipanggil Inspector.
+1. Jalankan **saat sudah di dalam match**, lalu tekan **Snapshot**. Section **GAME NETWORK** memanggil getter baca-saja milik game (role, teamMembers, gamePhase, dan sejenisnya) untuk melihat format balasannya. Remote aksi seperti `onStab` tidak pernah dipanggil Inspector. Section **DECOMPILE** membaca kode modul role client (tanpa menjalankannya) supaya argumen asli `onStab` / `onHeal` kelihatan.
 2. Tekan **Start live log**, lalu main satu ronde penuh: malam, ada yang ditusuk, ada yang di-heal, meeting, voting. Kalau bisa, sekali jadi Mafia dan sekali jadi role lain.
 3. Tekan **Save**. Hasilnya tersimpan di folder `workspace/NoctisENIX/` milik Xeno (dan ikut tersalin ke clipboard).
 4. Kirim file `.txt` itu. Isinya struktur modul game, config role, attribute, animasi, remote, dan log kejadian selama ronde, jadi deteksi role dan fitur aksi bisa dicocokkan dengan nama-nama asli game.
@@ -25,15 +25,23 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 
 | Tab | Isi |
 | --- | --- |
-| ESP | Highlight warna tim (merah Evil, emas Veil, hijau Town), baris `EVIL TEAM` / nama / `[ROLE]`, nama asli di balik disguise, status DOWNED / DETAINED / SILENCED / IN LOCKER, jarak, HP |
+| ESP | Highlight warna tim (merah Evil, emas Veil, hijau Town, ungu Neutral, abu-abu = belum pasti), baris `EVIL TEAM` / nama / `[ROLE]`, nama asli di balik disguise, status DOWNED / DETAINED / SILENCED / IN LOCKER, jarak, HP. Default cuma role yang **pasti**; tebakan bisa dinyalakan lewat "Show guesses too" |
 | Roles | Role kamu, daftar role yang sudah ketahuan beserta alasannya, kill feed dan log bukti, notifikasi role, alert saat ada yang vote kamu, reset ronde |
-| Deception | Fake crawl, fake stab, fake gunshot, ghost (semuanya bisa diberi keybind) |
+| Deception | Fake crawl, fake stab (`KnifeSwing`), fake gunshot (`Glock`), ghost, **Escape meeting seat**, **Stand on the table** (semuanya bisa diberi keybind) |
 | Teleport | Pilih target, ke target / ke yang downed / ke yang detained, Teleport-Stab-Return (Mafia), Bring target, Teleport-Heal-Return (Doctor) |
 | Player | Walk speed, jump power, infinite jump, noclip, fly, FOV |
 | Players | Daftar pemain + role, tombol target, teleport, spectate |
 | World | Fullbright, no fog, instant interact, anti AFK |
 | Dev Tools | Scan remote, dump pemain, remote logger |
 | Settings | Toggle key, cek game, rejoin, unload |
+
+## Catatan penting (v2.1)
+
+* **Tombol stab / tembak (T / F) tidak muncul?** Ada dua penyebab yang terlihat di log game:
+  1. Kamu sedang **Detained** (dipenjara Detainer). Selama itu game memang mematikan aksi Mafia.
+  2. Versi sebelumnya me-`require` modul controller game. Di Xeno, hal itu menjalankan ulang kode controller dan bisa merusak binding tombol. Sejak v2.1, NoctisENIX dan Inspector **tidak pernah** me-`require` modul client; yang di-require cuma config data (`shared.configurations`).
+* Tutup menu (RightShift) saat membidik tusukan atau tembakan. Selama menu terbuka, mouse dilepas supaya UI bisa diklik, sehingga game tidak bisa membidik.
+* Role call ketat: chat pemain di game ini lewat jalur pesan sistem, dan dulu sempat terbaca sebagai pengumuman. Sekarang chat pemain diabaikan, animasi serangan dikunci ke ID asli (`KnifeSwing`, `Glock`), dan yang tampil default cuma role yang pasti.
 
 ## Cara kerja deteksi role
 

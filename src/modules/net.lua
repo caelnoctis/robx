@@ -141,6 +141,16 @@ return function(ctx)
                 return ok and p or nil
             end
         elseif t == "string" then
+            -- Kunci tabel game kadang UserId dalam bentuk string ("4145298002").
+            if string.match(v, "^%d+$") then
+                local n = tonumber(v)
+                if n and n > 1000 then
+                    local ok, p = pcall(Players.GetPlayerByUserId, Players, n)
+                    if ok and p then
+                        return p
+                    end
+                end
+            end
             local l = string.lower(v)
             for _, p in ipairs(Players:GetPlayers()) do
                 if string.lower(p.Name) == l or string.lower(p.DisplayName) == l then
@@ -176,6 +186,26 @@ return function(ctx)
         return nil
     end
 
+    -- "witches" -> Witch, "bodyguards" -> Bodyguard, "mafia" -> Mafia
+    local function roleFromKey(k)
+        if type(k) ~= "string" then
+            return nil
+        end
+        local r = Game.matchRole(k)
+        if r then
+            return r
+        end
+        local l = string.lower(k)
+        local single = string.match(l, "^(.-)es$")
+        r = single and Game.matchRole(single)
+        if r then
+            return r
+        end
+        single = string.match(l, "^(.-)s$")
+        return single and Game.matchRole(single) or nil
+    end
+    Net.roleFromKey = roleFromKey
+
     local PLAYER_KEYS = { player = true, plr = true, user = true, userid = true, target = true, character = true, char = true, victim = true }
     local ROLE_KEYS = { role = true, rolename = true, class = true }
     local TEAM_KEYS = { team = true, teamname = true, faction = true, alignment = true, side = true }
@@ -205,6 +235,22 @@ return function(ctx)
             end
             if p and (r or tm) then
                 out[#out + 1] = { player = p, role = r, team = tm }
+            end
+            -- { mafia = {...}, witches = {...} }: daftar anggota per role
+            for k, v in pairs(t) do
+                local kr = (type(v) == "table") and roleFromKey(k) or nil
+                if kr then
+                    for _, member in pairs(v) do
+                        local mp = playerFrom(member)
+                        if not mp and type(member) == "table" then
+                            mp = playerFrom(rawget(member, "player") or rawget(member, "Player") or rawget(member, "userId")
+                                or rawget(member, "UserId") or rawget(member, "name"))
+                        end
+                        if mp then
+                            out[#out + 1] = { player = mp, role = kr }
+                        end
+                    end
+                end
             end
             for k, v in pairs(t) do
                 local kp = nil
@@ -331,7 +377,17 @@ return function(ctx)
 
     local function onMessage(source)
         return function(...)
-            local texts = stringsIn(table.pack(...))
+            local args = table.pack(...)
+            for i = 1, args.n do
+                local v = args[i]
+                if typeof(v) == "Instance" and playerFrom(v) then
+                    return -- chat pemain (argumen pembicara), bukan pengumuman
+                end
+                if type(v) == "string" and string.find(v, "^%s*<font[^>]*><b>[^<]+:</b>") then
+                    return
+                end
+            end
+            local texts = stringsIn(args)
             for _, t in ipairs(texts) do
                 call("message", t, source)
             end
@@ -349,6 +405,34 @@ return function(ctx)
             local victims = Net.playersIn(args)
             for p in pairs(victims) do
                 call("death", p, source)
+            end
+        end
+    end
+
+    -- Log debug alur game dari server: ">>> phase 'Night' START", "=== CYCLE start (day 2) ===",
+    -- "role[detainer].onGameStateChanged" (role yang ada di ronde ini).
+    Net.rolesInRound = {}
+    local function onGameFlow(...)
+        local args = table.pack(...)
+        for i = 1, args.n do
+            local line = args[i]
+            if type(line) == "string" then
+                local phase = string.match(line, ">>> phase '([^']+)' START")
+                if phase then
+                    Net.phaseText = phase
+                    call("phase", phase)
+                end
+                if string.find(line, "CYCLE start (day 1)", 1, true) then
+                    Net.rolesInRound = {}
+                    call("round", 1)
+                end
+                local rk = string.match(line, "role%[([%a]+)%]")
+                if rk then
+                    local r = Game.matchRole(rk)
+                    if r then
+                        Net.rolesInRound[r] = true
+                    end
+                end
             end
         end
     end
@@ -401,7 +485,13 @@ return function(ctx)
         local found = Net.extract(res)
         handlePairs(found, "confirmed", reason)
         local members = Net.playersIn(res)
-        local myTeam = Net.selfRole and Game.teamOf(Net.selfRole) or nil
+        local myTeam = nil
+        local first = res[1]
+        if type(first) == "table" then
+            local tf = rawget(first, "team") or rawget(first, "Team")
+            myTeam = tf and Game.normalizeTeam(tf) or nil
+        end
+        myTeam = myTeam or (Net.selfRole and Game.teamOf(Net.selfRole)) or nil
         for p in pairs(members) do
             if p ~= LocalPlayer then
                 call("teammate", p, myTeam, reason)
@@ -567,6 +657,7 @@ return function(ctx)
         found.deathCutscene = listen(Net.service("gameService", "playDeathCutscene"), onDeath("death cutscene"))
         found.bodyFound = listen(Net.service("gameService", "playBodyFoundCutscene"), onDeath("body found"))
         found.topbar = listen(Net.service("gameService", "setTopbarText"), onTopbar)
+        found.gameFlow = listen(RS:FindFirstChild("GameFlowLogRemote"), onGameFlow)
         found.roleService = Net.service("roleService", "role") ~= nil
         found.onStab = Net.role("mafia", "onStab") ~= nil
         found.onHeal = Net.role("doctor", "onHeal") ~= nil

@@ -185,8 +185,17 @@ return function(ctx)
         return ok and r == true
     end
 
-    -- Cocokkan nama: exact dulu (urut kandidat), lalu substring.
-    local function matchByName(entries, names, resolveFn)
+    local function hasAny(s, list)
+        for _, w in ipairs(list or {}) do
+            if string.find(s, w, 1, true) then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Cocokkan nama: exact dulu (urut kandidat, SEMUA sumber), baru substring (nama berisi kata `avoid` dilewati).
+    local function matchByName(entries, names, resolveFn, avoid)
         for pass = 1, 2 do
             for _, c in ipairs(names) do
                 local lc = string.lower(c)
@@ -195,7 +204,7 @@ return function(ctx)
                     if pass == 1 then
                         hit = e.key == lc
                     else
-                        hit = string.find(e.key, lc, 1, true) ~= nil
+                        hit = string.find(e.key, lc, 1, true) ~= nil and not hasAny(e.key, avoid)
                     end
                     if hit then
                         local a = resolveFn(e)
@@ -207,6 +216,16 @@ return function(ctx)
             end
         end
         return nil
+    end
+
+    local function sortEntries(list)
+        pcall(table.sort, list, function(a, b)
+            if a.key == b.key then
+                return tostring(a.name or "") < tostring(b.name or "")
+            end
+            return a.key < b.key
+        end)
+        return list
     end
 
     -- Fallback 1: Animation di PlayerScripts / ReplicatedFirst / Backpack / Character / StarterPack (cache 10 s).
@@ -235,7 +254,7 @@ return function(ctx)
             pcall(function()
                 for _, d in ipairs(r:GetDescendants()) do
                     if d:IsA("Animation") then
-                        list[#list + 1] = { key = string.lower(d.Name), value = d }
+                        list[#list + 1] = { key = string.lower(d.Name), name = d.Name, value = d }
                     end
                 end
             end)
@@ -312,25 +331,51 @@ return function(ctx)
         return makeAnim(e.name, v)
     end
 
-    local function findAnim(names)
-        local ok, a = pcall(Game.findAnimation, names)
-        if ok and isAnimation(a) then
-            return a
+    -- Satu daftar dari semua sumber: scan GameAPI (assets.animations + ReplicatedStorage), lalu
+    -- PlayerScripts / Backpack / Character / StarterPack, lalu modul ID. Urutan dalam tiap sumber = urut nama
+    -- (pairs() tidak deterministik).
+    local function animEntries()
+        local list = {}
+        local okS, map = pcall(Game.scanAnimations, false)
+        if okS and type(map) == "table" then
+            local scanned = {}
+            for k, v in pairs(map) do
+                if type(k) == "string" then
+                    scanned[#scanned + 1] = { key = string.lower(k), name = k, value = v }
+                end
+            end
+            for _, e in ipairs(sortEntries(scanned)) do
+                list[#list + 1] = e
+            end
         end
-        local hit = matchByName(extraAnimEntries(), names, function(e)
-            return e.value
-        end)
-        if hit then
-            return hit
+        for _, e in ipairs(extraAnimEntries()) do
+            list[#list + 1] = e
         end
-        local entries, seen = {}, {}
+        local mods, seen = {}, {}
         for _, path in ipairs({ "assets.animations.player1", "assets.animations" }) do
-            flattenAnims(req(path), entries, 0, seen)
+            flattenAnims(req(path), mods, 0, seen)
         end
-        if #entries == 0 then
-            return nil
+        for _, e in ipairs(sortEntries(mods)) do
+            e.fromModule = true
+            list[#list + 1] = e
         end
-        return matchByName(entries, names, moduleAnimValue)
+        return list
+    end
+
+    local function resolveAnimEntry(e)
+        if e.fromModule then
+            return moduleAnimValue(e)
+        end
+        local v = e.value
+        -- Animation yang sudah di-Destroy (Parent nil) bisa masih ada di cache scan
+        if isAnimation(v) and idx(v, "Parent") ~= nil then
+            return v
+        end
+        return nil
+    end
+
+    local function findAnim(names, avoid)
+        return matchByName(animEntries(), names, resolveAnimEntry, avoid)
     end
 
     local function sameAnim(a, b)
@@ -414,7 +459,7 @@ return function(ctx)
     local Busy = { on = false }
     local Last = { method = nil }
     local Crawl = {
-        on = false, hb = nil, hum = nil, crawl = nil, idle = nil, crawlAnim = nil, idleAnim = nil,
+        on = false, hb = nil, st = nil, hum = nil, crawl = nil, idle = nil, crawlAnim = nil, idleAnim = nil,
         mode = nil, still = 0, flagT = 0, paused = false, saved = nil, speed = 4, wrote = false, retry = 0,
     }
     local Shot = { last = {}, token = {}, tracks = {} }
@@ -426,7 +471,9 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Animasi
     ------------------------------------------------------------------
-    local function loadTrack(animator, anim, looped)
+    -- priorityName: prioritas lebih tinggi (mis. "Action4") supaya one-shot tidak dicampur 50/50 dengan
+    -- track crawl yang juga Action; fallback ke Action kalau enum itu tidak ada di engine ini.
+    local function loadTrack(animator, anim, looped, priorityName)
         local ok, track = pcall(function()
             return animator:LoadAnimation(anim)
         end)
@@ -434,9 +481,23 @@ return function(ctx)
             return nil
         end
         pcall(function()
-            track.Priority = Enum.AnimationPriority.Action
             track.Looped = looped
         end)
+        local okP = false
+        if priorityName then
+            okP = pcall(function()
+                local pr = Enum.AnimationPriority[priorityName]
+                if pr == nil then
+                    error("no priority")
+                end
+                track.Priority = pr
+            end)
+        end
+        if not okP then
+            pcall(function()
+                track.Priority = Enum.AnimationPriority.Action
+            end)
+        end
         return track
     end
 
@@ -554,6 +615,20 @@ return function(ctx)
         Crawl.mode = mode
     end
 
+    local function crawlModePlaying(mode)
+        local track = Crawl.crawl
+        if mode == "idle" and Crawl.idle then
+            track = Crawl.idle
+        end
+        if not track then
+            return true
+        end
+        local ok, playing = pcall(function()
+            return track.IsPlaying
+        end)
+        return not ok or playing == true
+    end
+
     local function crawlStep(dt)
         if not Crawl.on or not live() then
             return
@@ -577,9 +652,11 @@ return function(ctx)
             Crawl.flagT = 1
         end
         -- beneran downed? biarkan game yang animasiin (cek tiap 0.25 s, bukan tiap frame)
+        local recheck = false
         Crawl.flagT = Crawl.flagT + dt
         if Crawl.flagT >= 0.25 then
             Crawl.flagT = 0
+            recheck = true
             local was = Crawl.paused
             Crawl.paused = flag(LocalPlayer, "Downed")
             if Crawl.paused and not was then
@@ -595,6 +672,9 @@ return function(ctx)
                 hum.WalkSpeed = Crawl.speed
             end
             Crawl.wrote = true
+        elseif Crawl.wrote then
+            -- crawlKeepSpeed baru dinyalakan di tengah crawl: balikin speed normal sekarang
+            crawlRestoreSpeed()
         end
         local mag = 0
         pcall(function()
@@ -614,14 +694,33 @@ return function(ctx)
         if want == nil then
             want = "idle"
         end
-        if want ~= Crawl.mode then
+        -- recheck: track kita bisa di-Stop game (Animate, equip tool, ganti state) -> putar lagi
+        if want ~= Crawl.mode or (recheck and not crawlModePlaying(want)) then
             crawlSetMode(want)
         end
+    end
+
+    -- Stepped jalan tepat sebelum physics: speed crawl menang dari penulis WalkSpeed lain di Heartbeat
+    -- (mis. speed hack script utama), urutan koneksi Heartbeat tidak dijamin.
+    local function crawlPhysicsStep()
+        if not Crawl.on or Crawl.paused or not Crawl.wrote then
+            return
+        end
+        local hum = Crawl.hum
+        if not hum or setting("crawlKeepSpeed", false) then
+            return
+        end
+        pcall(function()
+            if hum.Parent and hum.WalkSpeed ~= Crawl.speed then
+                hum.WalkSpeed = Crawl.speed
+            end
+        end)
     end
 
     local function crawlOff()
         Crawl.on = false
         Crawl.hb = disconnect(Crawl.hb)
+        Crawl.st = disconnect(Crawl.st)
         crawlRelease()
         crawlRestoreSpeed()
         Crawl.hum = nil
@@ -650,7 +749,7 @@ return function(ctx)
         if not crawlAnim then
             return false, MSG.noCrawlAnim
         end
-        local idleAnim = findAnim({ "Wounded Idle", "wounded" })
+        local idleAnim = findAnim({ "Wounded Idle", "wounded" }, { "crawl" })
         if sameAnim(idleAnim, crawlAnim) then
             idleAnim = nil
         end
@@ -668,6 +767,10 @@ return function(ctx)
         end
         Crawl.on = true
         Crawl.hb = connect(RunService.Heartbeat, crawlStep)
+        local stepped = idx(RunService, "Stepped")
+        if stepped then
+            Crawl.st = connect(stepped, crawlPhysicsStep)
+        end
         crawlStep(0)
         return true, "Everyone sees you crawling wounded."
     end
@@ -675,6 +778,9 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Fake stab / fake gunshot (cuma animasi: tanpa equip tool, tanpa remote)
     ------------------------------------------------------------------
+    -- pose yang bukan aksi (KnifeIdle, KnifeEquip, ...) tidak boleh menang lewat substring "knife"
+    local ONE_SHOT_AVOID = { "idle", "equip", "hold", "walk", "run", "sprint", "jump", "crawl", "wound", "pose" }
+
     local function oneShot(kind, names, label)
         local t = now()
         local last = Shot.last[kind]
@@ -689,7 +795,7 @@ return function(ctx)
         if not animator then
             return false, MSG.noAnimator
         end
-        local anim = findAnim(names)
+        local anim = findAnim(names, ONE_SHOT_AVOID)
         if not anim then
             return false, label .. " animation not found in this game version."
         end
@@ -704,7 +810,7 @@ return function(ctx)
                     cache.track:Destroy()
                 end)
             end
-            track = loadTrack(animator, anim, false)
+            track = loadTrack(animator, anim, false, "Action4")
             if not track then
                 return false, "Could not load " .. tostring(anim.Name) .. "."
             end
@@ -741,11 +847,11 @@ return function(ctx)
     end
 
     function Actions.fakeStab()
-        return oneShot("stab", { "KnifeSwing", "stab", "Knife" }, "Stab")
+        return oneShot("stab", { "KnifeSwing" }, "Stab")
     end
 
     function Actions.fakeShot()
-        return oneShot("shot", { "gunShot", "gunshot", "Shoot", "Fire" }, "Gunshot")
+        return oneShot("shot", { "Glock" }, "Gunshot")
     end
 
     ------------------------------------------------------------------
@@ -761,6 +867,11 @@ return function(ctx)
         Ghost.pending = nil
         if p.root.Parent and p.char == LocalPlayer.Character then
             pcall(function()
+                -- game memindahkan kita di antara Heartbeat dan render (kursi meeting, reset ronde)?
+                -- posisi baru itu yang dipakai, jangan ditimpa posisi lama
+                if (p.root.CFrame.Position - p.shifted.Position).Magnitude > 2 then
+                    return
+                end
                 p.root.CFrame = p.cf
                 p.root.AssemblyLinearVelocity = p.vel
             end)
@@ -788,9 +899,15 @@ return function(ctx)
         if not okSave then
             return
         end
-        Ghost.pending = { root = root, char = char, cf = cf, vel = vel }
+        local okShift, shifted = pcall(function()
+            return cf + Vector3.new(0, -depth, 0)
+        end)
+        if not okShift then
+            return
+        end
+        Ghost.pending = { root = root, char = char, cf = cf, vel = vel, shifted = shifted }
         local okSet = pcall(function()
-            root.CFrame = cf + Vector3.new(0, -depth, 0)
+            root.CFrame = shifted
         end)
         if not okSet then
             Ghost.pending = nil
@@ -854,7 +971,7 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Target
     ------------------------------------------------------------------
-    local bringOff
+    local bringOff, bringRetarget
 
     function Actions.livingPlayers()
         local out = {}
@@ -888,7 +1005,7 @@ return function(ctx)
         if p == nil then
             Target.player = nil
             if Bring.on then
-                bringOff(nil)
+                bringOff("Target cleared, bring turned off.")
             end
             return true, "Target cleared."
         end
@@ -904,10 +1021,11 @@ return function(ctx)
         if not alive(p) then
             return false, MSG.noTarget
         end
-        if Bring.on and Bring.player ~= p then
-            bringOff(nil)
-        end
         Target.player = p
+        -- bring ikut pindah ke target baru (target lama dibalikin ke posisi aslinya)
+        if Bring.on and Bring.player ~= p then
+            bringRetarget(p)
+        end
         return true, "Target: " .. nameOf(p)
     end
 
@@ -932,6 +1050,22 @@ return function(ctx)
         return nil
     end
 
+    -- Tulis balik posisi asli target. Penting kalau tidak ada update replikasi yang menimpa posisi bring
+    -- (target diam, atau duduk di kursi anchored lewat SeatWeld saat meeting). Kalau CFrame sekarang sudah
+    -- bukan yang kita set, itu update replikasi yang lebih baru: biarkan.
+    local function bringRestoreReal()
+        local r, real, set = Bring.root, Bring.real, Bring.lastSet
+        Bring.lastSet = nil
+        if not (r and real and set) then
+            return
+        end
+        pcall(function()
+            if r.Parent and r.CFrame == set then
+                r.CFrame = real
+            end
+        end)
+    end
+
     bringOff = function(reason)
         local was = Bring.on
         Bring.on = false
@@ -940,10 +1074,17 @@ return function(ctx)
             Bring.bound = false
         end
         Bring.conn = disconnect(Bring.conn)
+        bringRestoreReal()
         Bring.player, Bring.root, Bring.real, Bring.lastSet = nil, nil, nil, nil
         if was and reason then
             notify("Bring target", reason)
         end
+    end
+
+    bringRetarget = function(p)
+        bringRestoreReal()
+        local _, _, r = body(p)
+        Bring.player, Bring.root, Bring.real, Bring.lastSet, Bring.checkT = p, r, nil, nil, now()
     end
 
     local function bringStep()
@@ -959,13 +1100,18 @@ return function(ctx)
         -- validasi target (isAlive) dibatasi 4x per detik
         if t - Bring.checkT >= 0.25 or not (tRoot and tRoot.Parent) then
             Bring.checkT = t
-            p = Actions.getTarget()
-            local _, _, r = body(p)
-            if p ~= Bring.player or r ~= Bring.root then
-                Bring.real, Bring.lastSet = nil, nil
+            local np = Actions.getTarget()
+            local _, _, r = body(np)
+            if not (np and r and r.Parent) then
+                bringOff("Target lost, bring turned off.")
+                return
             end
-            Bring.player, Bring.root = p, r
-            tRoot = r
+            if np ~= Bring.player or r ~= Bring.root then
+                bringRestoreReal()
+                Bring.real = nil
+            end
+            Bring.player, Bring.root = np, r
+            p, tRoot = np, r
         end
         if not (p and tRoot and tRoot.Parent) then
             bringOff("Target lost, bring turned off.")
@@ -981,8 +1127,9 @@ return function(ctx)
             if Bring.lastSet == nil or cur ~= Bring.lastSet then
                 Bring.real = cur
             end
-            -- selama TSR / THR target dibiarkan di posisi asli (cek jarak di client game)
+            -- selama TSR / THR target ditaruh balik di posisi asli (cek jarak / hitbox di client game)
             if Busy.on then
+                bringRestoreReal()
                 return
             end
             local myCF = myRoot.CFrame
@@ -1034,12 +1181,13 @@ return function(ctx)
         local best, bestD = nil, nil
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= LocalPlayer and alive(p) and flag(p, flagName) then
-                local _, _, r = body(p)
-                if r then
+                -- posisi asli (bukan posisi palsu hasil Bring)
+                local cf = realTargetCF(p)
+                if cf then
                     local d = 0
                     if myPos then
                         pcall(function()
-                            d = (r.CFrame.Position - myPos).Magnitude
+                            d = (cf.Position - myPos).Magnitude
                         end)
                     end
                     if not best or d < bestD then
@@ -1100,7 +1248,55 @@ return function(ctx)
     ------------------------------------------------------------------
     local STAB_FNS = { "handleMafiaStab", "handleStab", "tryStab", "attemptStab" }
     local HEAL_WORDS = { "heal", "revive", "save", "pick" }
-    local SKIP_PREFIX = { "set", "get", "is", "can", "has", "on", "init", "start", "setup", "update", "render", "play", "show", "hide", "destroy", "clean" }
+    local SKIP_FIRST = {}
+    for _, w in ipairs({ "set", "get", "is", "can", "has", "on", "init", "start", "setup", "update", "render", "play", "show", "hide", "destroy", "clean" }) do
+        SKIP_FIRST[w] = true
+    end
+
+    -- "handleDoctorSave" / "Revive_Prompt" / "Pick up" -> { "handle", "doctor", "save" } dst (huruf kecil)
+    local function nameWords(s)
+        local out = {}
+        s = tostring(s or "")
+        s = string.gsub(s, "(%l)(%u)", "%1 %2")
+        s = string.gsub(s, "(%u)(%u%l)", "%1 %2")
+        for w in string.gmatch(string.lower(s), "%a+") do
+            out[#out + 1] = w
+        end
+        return out
+    end
+
+    -- Kata utuh + imbuhan umum: heal/heals/healed/healing/healer, revive/reviving, stab/stabbing.
+    -- "health" TIDAK cocok dengan "heal".
+    local WORD_SUFFIX = { [""] = true, s = true, ed = true, ing = true, er = true }
+    local function hasWord(tokens, w)
+        local stem = nil
+        if string.sub(w, -1) == "e" then
+            stem = string.sub(w, 1, -2)
+        end
+        local dbl = w .. string.sub(w, -1)
+        for _, t in ipairs(tokens) do
+            if string.sub(t, 1, #w) == w and WORD_SUFFIX[string.sub(t, #w + 1)] then
+                return true
+            end
+            if stem and (t == stem .. "ing" or t == stem .. "ed") then
+                return true
+            end
+            if t == dbl .. "ing" or t == dbl .. "ed" then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- index kata pertama di `list` yang ada di tokens, atau nil
+    local function firstWord(tokens, list)
+        for i, w in ipairs(list) do
+            if hasWord(tokens, w) then
+                return i
+            end
+        end
+        return nil
+    end
 
     local function exactFn(host, names)
         for _, n in ipairs(names) do
@@ -1132,27 +1328,19 @@ return function(ctx)
         if okMt and type(mt) == "table" and type(rawget(mt, "__index")) == "table" then
             scan(rawget(mt, "__index"))
         end
+        -- handle* selalu di depan, lalu urutan kata; kata utuh saja (healthChanged bukan "heal")
         local best, bestScore, bestFn = nil, nil, nil
         for name, fn in pairs(found) do
-            local l = string.lower(name)
-            local skip = false
-            for _, pre in ipairs(SKIP_PREFIX) do
-                if string.sub(l, 1, #pre) == pre then
-                    skip = true
-                    break
-                end
-            end
-            if not skip then
-                for i, w in ipairs(words) do
-                    if string.find(l, w, 1, true) then
-                        local score = i * 10
-                        if string.sub(l, 1, 6) ~= "handle" then
-                            score = score + 5
-                        end
-                        if not best or score < bestScore or (score == bestScore and name < best) then
-                            best, bestScore, bestFn = name, score, fn
-                        end
-                        break
+            local toks = nameWords(name)
+            if toks[1] and not SKIP_FIRST[toks[1]] then
+                local i = firstWord(toks, words)
+                if i then
+                    local score = i * 10
+                    if toks[1] ~= "handle" then
+                        score = score + 100
+                    end
+                    if not best or score < bestScore or (score == bestScore and name < best) then
+                        best, bestScore, bestFn = name, score, fn
                     end
                 end
             end
@@ -1268,14 +1456,17 @@ return function(ctx)
         return nil, nil
     end
 
+    -- Set argumen berikutnya cuma dicoba kalau yang ini ERROR (konvensi salah). Return false = handler
+    -- menolak (cooldown dsb.): tetap dihitung terpanggil, jangan dipanggil ulang dengan argumen lain.
+    -- return ok, argsDipakai, nilaiReturn
     local function tryCalls(fn, sets)
         for _, args in ipairs(sets) do
             local ok, r = pcall(fn, table.unpack(args, 1, args.n))
-            if ok and r ~= false then
-                return true, args
+            if ok then
+                return true, args, r
             end
         end
-        return false, nil
+        return false, nil, nil
     end
 
     -- return true (method, self dulu), false (fungsi biasa), nil (gagal)
@@ -1347,8 +1538,9 @@ return function(ctx)
         else
             sets = { pack(host, "NoctisENIX", begin, input), pack(host, char, plr), pack("NoctisENIX", begin, input) }
         end
-        local ok = tryCalls(fn, sets)
-        return ok
+        -- return terpanggil, menolak (return false)
+        local ok, _, r = tryCalls(fn, sets)
+        return ok, ok and r == false
     end
 
     ------------------------------------------------------------------
@@ -1392,46 +1584,97 @@ return function(ctx)
         return nil
     end
 
+    -- token teks prompt (ActionText + ObjectText + Name), nil kalau prompt mati / tidak terbaca
+    local function promptWords(pr)
+        local ok, toks = pcall(function()
+            if pr.Enabled == false then
+                return nil
+            end
+            return nameWords(tostring(pr.ActionText or "") .. " " .. tostring(pr.ObjectText or "") .. " " .. tostring(pr.Name or ""))
+        end)
+        if ok then
+            return toks
+        end
+        return nil
+    end
+
+    -- prompt ambil item (Medkit, Banana, Knife, Flashlight ...) bukan aksi ke pemain
+    local PICKUP_WORDS = { "pick", "pickup", "grab", "take", "collect", "equip", "loot", "buy" }
+
+    -- true kalau prompt ada di dalam Tool (dicari sampai `stop`)
+    local function inTool(pr, stop)
+        local ok, r = pcall(function()
+            local node = pr.Parent
+            while node and node ~= stop do
+                if node:IsA("Tool") then
+                    return true
+                end
+                node = node.Parent
+            end
+            return false
+        end)
+        return not ok or r == true
+    end
+
+    -- Prop dunia: bukan di Tool, bukan di karakter pemain lain / NPC (Model yang punya Humanoid).
+    local function worldProp(pr)
+        local ok, r = pcall(function()
+            local node = pr.Parent
+            local hops = 0
+            while node and node ~= ctx.Workspace and hops < 20 do
+                if node:IsA("Tool") then
+                    return false
+                end
+                if node:IsA("Model") and (Players:GetPlayerFromCharacter(node) or node:FindFirstChildOfClass("Humanoid")) then
+                    return false
+                end
+                node = node.Parent
+                hops = hops + 1
+            end
+            return true
+        end)
+        return ok and r == true
+    end
+
     -- Urutan: prompt di badan target dulu, lalu kata yang lebih spesifik (urutan `words`), lalu yang terdekat.
-    local function matchingPrompts(tChar, center, words, radius)
+    -- Badan target: `words` + `bodyWords` (kata umum seperti help / pick cuma boleh di sini).
+    -- Dalam `radius` stud: cuma prop dunia (lihat worldProp), bukan prompt ambil item, cuma `words`.
+    local function matchingPrompts(st, words, bodyWords, radius)
         local hits, seen = {}, {}
-        local function consider(pr, base, dist)
-            if seen[pr] then
-                return
-            end
-            seen[pr] = true
-            local okT, text = pcall(function()
-                if pr.Enabled == false then
-                    return nil
-                end
-                return string.lower(tostring(pr.ActionText or "") .. " " .. tostring(pr.ObjectText or "") .. " " .. tostring(pr.Name or ""))
-            end)
-            if not (okT and text) then
-                return
-            end
-            for i, w in ipairs(words) do
-                if string.find(text, w, 1, true) then
-                    hits[#hits + 1] = { pr = pr, score = base + i * 20 + dist }
-                    return
-                end
-            end
+        local tChar, center = st.tChar, st.center
+        local bodyList = {}
+        for _, w in ipairs(words) do
+            bodyList[#bodyList + 1] = w
+        end
+        for _, w in ipairs(bodyWords or {}) do
+            bodyList[#bodyList + 1] = w
         end
         pcall(function()
             for _, d in ipairs(tChar:GetDescendants()) do
-                if d:IsA("ProximityPrompt") then
-                    consider(d, 0, 0)
+                if d:IsA("ProximityPrompt") and not seen[d] then
+                    seen[d] = true
+                    local toks = promptWords(d)
+                    local i = toks and not inTool(d, tChar) and firstWord(toks, bodyList)
+                    if i then
+                        hits[#hits + 1] = { pr = d, score = i * 20 }
+                    end
                 end
             end
         end)
         if center then
             for _, pr in ipairs(allPrompts()) do
-                local pos = promptPos(pr)
-                if pos then
+                if not seen[pr] then
+                    seen[pr] = true
+                    local pos = promptPos(pr)
                     local okD, d = pcall(function()
                         return (pos - center).Magnitude
                     end)
-                    if okD and d <= radius then
-                        consider(pr, 1000, d)
+                    if pos and okD and d <= radius and worldProp(pr) then
+                        local toks = promptWords(pr)
+                        local i = toks and not firstWord(toks, PICKUP_WORDS) and firstWord(toks, words)
+                        if i then
+                            hits[#hits + 1] = { pr = pr, score = 1000 + i * 20 + d }
+                        end
                     end
                 end
             end
@@ -1472,7 +1715,9 @@ return function(ctx)
     end
 
     ------------------------------------------------------------------
-    -- Strategi (return "ok", method | "skip", reason | "fail", reason)
+    -- Strategi. Dua tahap supaya pencarian mahal (require, getgc, scan prompt) jalan SEBELUM teleport:
+    --   prepare(st) -> "ready", run | "skip", reason      (dipanggil sebelum pindah)
+    --   run()       -> "ok", method | "fail", method      (dipanggil saat sudah di belakang target)
     ------------------------------------------------------------------
     local function findTool(words)
         local places = { LocalPlayer.Character, LocalPlayer:FindFirstChildOfClass("Backpack") }
@@ -1499,35 +1744,46 @@ return function(ctx)
             if not host then
                 return "skip", notLoaded
             end
-            local style = nil
-            local setFn = fnOf(host, "setTargetCharacter")
-            if setFn then
-                style = callSetter(host, setFn, st.tChar)
-            end
             local name, fn = actionPicker(host, strict)
             if not fn then
                 return "skip", notLoaded
             end
-            if callAction(host, fn, style, st) then
-                return "ok", "handler:" .. name
+            local setFn = fnOf(host, "setTargetCharacter")
+            local label = "handler:" .. name
+            return "ready", function()
+                local style = nil
+                if setFn then
+                    style = callSetter(host, setFn, st.tChar)
+                end
+                local called, refused = callAction(host, fn, style, st)
+                if refused then
+                    return "fail", label .. " (refused)"
+                end
+                if called then
+                    return "ok", label
+                end
+                return "fail", label .. " (errored)"
             end
-            return "fail", "handler " .. name .. " errored"
         end
     end
 
-    local function promptStrategy(words)
+    local function promptStrategy(words, bodyWords)
         return function(st)
-            local list = matchingPrompts(st.tChar, st.center, words, 12)
+            local list = matchingPrompts(st, words, bodyWords, 12)
             if #list == 0 then
                 return "skip", nil
             end
-            for _, pr in ipairs(list) do
-                local how = firePrompt(pr)
-                if how then
-                    return "ok", "prompt:" .. how
+            return "ready", function()
+                for _, pr in ipairs(list) do
+                    if idx(pr, "Parent") ~= nil then
+                        local how = firePrompt(pr)
+                        if how then
+                            return "ok", "prompt:" .. how
+                        end
+                    end
                 end
+                return "fail", "prompt (could not fire)"
             end
-            return "fail", "prompt could not be fired"
         end
     end
 
@@ -1537,42 +1793,50 @@ return function(ctx)
             if not tool then
                 return "skip", nil
             end
-            if tool.Parent ~= st.char then
-                local okE = pcall(function()
-                    st.hum:EquipTool(tool)
-                end)
-                if not okE then
-                    return "fail", "could not equip " .. tostring(tool.Name)
+            local label = "tool:" .. tostring(tool.Name)
+            return "ready", function()
+                if tool.Parent ~= st.char then
+                    local okE = pcall(function()
+                        st.hum:EquipTool(tool)
+                    end)
+                    if not okE then
+                        return "fail", label .. " (could not equip)"
+                    end
+                    st.equipped = tool
+                    task.wait()
                 end
-                st.equipped = tool
-                task.wait()
+                local okA = pcall(function()
+                    tool:Activate()
+                end)
+                if okA then
+                    return "ok", label
+                end
+                return "fail", label .. " (could not use)"
             end
-            local okA = pcall(function()
-                tool:Activate()
-            end)
-            if okA then
-                return "ok", "tool:" .. tostring(tool.Name)
-            end
-            return "fail", "could not use " .. tostring(tool.Name)
         end
     end
 
     -- Remote asli game (ReplicatedStorage.RoleNetworks.mafia.onStab / doctor.onHeal) lewat Net module.
     local function netStrategy(kind)
+        -- Protokol strategi: tahap siapkan (sebelum teleport) return "ready", runner;
+        -- runner dijalankan SETELAH teleport dan return "ok"/"fail", info.
         return function(st)
             local net = ctx.Net
             local fn = net and (kind == "stab" and net.stab or net.heal)
             if type(fn) ~= "function" then
                 return "skip", nil
             end
-            local ok, method = fn(st.p)
-            if ok then
-                return "ok", method
-            end
-            if type(method) == "string" and string.find(method, "not found", 1, true) then
+            local remote = net.role and net.role(kind == "stab" and "mafia" or "doctor", kind == "stab" and "onStab" or "onHeal")
+            if not remote then
                 return "skip", nil
             end
-            return "fail", "remote: " .. tostring(method)
+            return "ready", function()
+                local ok, method = fn(st.p)
+                if ok then
+                    return "ok", method
+                end
+                return "fail", "remote: " .. tostring(method)
+            end
         end
     end
 
@@ -1581,7 +1845,8 @@ return function(ctx)
         handlerStrategy("mafia", function(host)
             return exactFn(host, STAB_FNS)
         end, MSG.stabNotLoaded),
-        promptStrategy({ "stab", "kill", "attack", "knife" }),
+        -- "knife" cuma untuk prompt di badan target (prompt Knife di dunia = ambil item)
+        promptStrategy({ "stab", "kill", "attack" }, { "knife" }),
         toolStrategy({ "knife" }),
     }
     local HEAL_STRATEGIES = {
@@ -1589,7 +1854,8 @@ return function(ctx)
         handlerStrategy("doctor", function(host, strict)
             return wordFn(host, strict and STRICT_HEAL_WORDS or HEAL_WORDS)
         end, MSG.healNotLoaded),
-        promptStrategy({ "heal", "revive", "save", "help", "pick" }),
+        -- help / pick terlalu umum: cuma untuk prompt di badan pemain yang downed
+        promptStrategy({ "heal", "revive", "save" }, { "help", "pick" }),
         toolStrategy({ "medkit", "med kit", "heal", "bandage", "syringe" }),
     }
 
@@ -1675,7 +1941,40 @@ return function(ctx)
         end
     end
 
+    -- Berapa lama menunggu efek satu strategi sebelum coba yang berikutnya: minimal tsrConfirm,
+    -- cukup untuk round-trip ke server kalau ping tinggi, maksimal 1 s.
+    local function confirmWindow()
+        local t = tonumber(setting("tsrConfirm", 0.3)) or 0.3
+        local okP, ping = pcall(function()
+            return LocalPlayer:GetNetworkPing()
+        end)
+        if okP and type(ping) == "number" and ping > 0 then
+            t = math.max(t, math.min(ping * 2 + 0.1, 1))
+        end
+        return t
+    end
+
     local function tripInner(op, st)
+        -- 1. siapkan semua strategi selagi masih di posisi awal: require / getgc / scan prompt yang
+        --    mahal tidak boleh bikin kita berdiri lama di belakang target
+        local runners, reason = {}, nil
+        for _, strat in ipairs(op.strategies) do
+            local okP, status, a = pcall(strat, st)
+            if not okP then
+                warnOnce(op.kind .. "prep" .. tostring(status), status)
+            elseif status == "ready" and type(a) == "function" then
+                runners[#runners + 1] = a
+            elseif status == "skip" and a and not reason then
+                reason = a
+            end
+        end
+        if #runners == 0 then
+            -- tidak ada yang bisa dicoba: jangan teleport sama sekali
+            Last.method = nil
+            return false, withNote(reason or op.notLoaded, op.note)
+        end
+        -- target bisa sudah jalan selama prepare (require bisa yield)
+        st.tcf = realTargetCF(st.p) or st.tcf
         local dist = tonumber(setting("tsrDistance", 3)) or 3
         local origin = st.root.CFrame
         st.origin = origin
@@ -1685,22 +1984,35 @@ return function(ctx)
         end
         st.moved = true
         st.pin = startPin(st.p, dist)
-        -- 2 frame supaya server lihat posisi baru
+        -- 2 frame + jeda kecil: replikasi posisi karakter terpisah dari remote, server harus sudah
+        -- lihat kita di dekat target sebelum remote aksi sampai
         task.wait()
         task.wait()
-        local res = { ran = false, method = nil, reason = nil }
-        for _, strat in ipairs(op.strategies) do
-            local okS, status, info = pcall(strat, st)
+        local pre = tonumber(setting("tsrPre", 0.12)) or 0.12
+        if pre > 0 then
+            task.wait(pre)
+        end
+        -- 2. jalankan berurutan. "Tidak error" belum tentu berhasil (handler di tabel modul bisa return
+        --    diam-diam, prompt bisa tidak bereaksi), jadi tunggu efeknya dulu sebelum lanjut / berhenti.
+        local res = { ran = false, confirmed = false, method = nil, failMethod = nil }
+        local confirm = confirmWindow()
+        for _, run in ipairs(runners) do
+            local okS, status, info = pcall(run)
             if not okS then
-                warnOnce(op.kind .. tostring(status), status)
+                warnOnce(op.kind .. "run" .. tostring(status), status)
             elseif status == "ok" then
                 res.ran, res.method = true, info
-                break
-            elseif status == "skip" and info and not res.reason then
-                res.reason = info
+                if pollUntil(op.check, confirm) then
+                    res.confirmed = true
+                    break
+                end
+            elseif not res.failMethod then
+                res.failMethod = info
             end
         end
-        task.wait(tonumber(setting("tsrHold", 0.35)) or 0.35)
+        if not res.confirmed then
+            task.wait(tonumber(setting("tsrHold", 0.35)) or 0.35)
+        end
         st.pin = disconnect(st.pin)
         -- selalu balik
         placeAt(st.char, st.root, origin)
@@ -1711,13 +2023,11 @@ return function(ctx)
             end)
             st.equipped = nil
         end
-        Last.method = res.method
-        if not res.ran then
-            return false, withNote(res.reason or op.notLoaded, op.note)
-        end
-        if pollUntil(op.check, op.verifyTime) then
+        Last.method = res.method or res.failMethod
+        if res.confirmed or pollUntil(op.check, op.verifyTime) then
             return true, withNote(op.success .. nameOf(st.p), op.note)
         end
+        -- handler ada tapi error / menolak / tidak ada efek: bukan "belum ke-load"
         return false, withNote(op.none, op.note)
     end
 
@@ -1743,6 +2053,8 @@ return function(ctx)
         local st = { p = p, tChar = tChar, tcf = tcf, center = center, char = char, hum = hum, root = root }
         Busy.on = true
         Ghost.suspended = true
+        -- Bring aktif: taruh target di posisi aslinya selama aksi (cek jarak / hitbox di client game)
+        bringRestoreReal()
         local okRun, ok, msg = pcall(tripInner, op, st)
         -- finally: lepas pin, balik ke posisi awal kalau belum, lepas tool
         st.pin = disconnect(st.pin)
@@ -1763,10 +2075,20 @@ return function(ctx)
         return ok, msg
     end
 
-    local function hurtState(p)
+    local function charDead(c)
+        local ok, r = pcall(function()
+            local h = c and c:FindFirstChildOfClass("Humanoid")
+            return h ~= nil and h.Health <= 0
+        end)
+        return ok and r == true
+    end
+
+    -- Mati dihitung dari flag Dead / Health <= 0 di karakter yang sama. Target keluar game atau
+    -- karakternya hilang BUKAN tanda tusukan kena.
+    local function hurtState(p, tChar)
         return {
             downed = flag(p, "Downed"),
-            dead = flag(p, "Dead") or not alive(p),
+            dead = flag(p, "Dead") or charDead(tChar),
             wound = flag(p, "knifeWound"),
         }
     end
@@ -1783,7 +2105,8 @@ return function(ctx)
         if not allowed then
             return false, MSG.mafiaOnly
         end
-        local before = hurtState(p)
+        local tChar = p.Character
+        local before = hurtState(p, tChar)
         return trip({
             kind = "stab",
             player = p,
@@ -1794,7 +2117,7 @@ return function(ctx)
             success = "Stab landed on ",
             verifyTime = 1,
             check = function()
-                local n = hurtState(p)
+                local n = hurtState(p, tChar)
                 return (n.downed and not before.downed) or (n.dead and not before.dead) or (n.wound and not before.wound)
             end,
         })
@@ -1830,6 +2153,154 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Status / cleanup
     ------------------------------------------------------------------
+    ------------------------------------------------------------------
+    -- Escape meeting seat + Stand on the table (v2.1)
+    -- Game menahan semua orang di kursi (Workspace.Map.Seats) selama meeting.
+    ------------------------------------------------------------------
+    local Escape = { on = false, conn = nil, disabled = {} }
+
+    local function seatsRoot()
+        local map = workspace:FindFirstChild("Map")
+        return map and map:FindFirstChild("Seats") or nil
+    end
+
+    local function unseatOnce()
+        local char, hum, root = myBody()
+        if not (hum and root) then
+            return false
+        end
+        local seat = hum.SeatPart
+        if seat then
+            for _, w in ipairs(seat:GetChildren()) do
+                if w.Name == "SeatWeld" and w:IsA("JointInstance") and (w.Part1 == root or w.Part0 == root) then
+                    pcall(function()
+                        w:Destroy()
+                    end)
+                end
+            end
+            pcall(function()
+                hum.Sit = false
+            end)
+            pcall(function()
+                hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end)
+        end
+        if root.Anchored then
+            pcall(function()
+                root.Anchored = false
+            end)
+        end
+        return seat ~= nil
+    end
+    Actions.unseat = unseatOnce
+
+    local function escapeOff()
+        Escape.on = false
+        Escape.conn = disconnect(Escape.conn)
+        for seat in pairs(Escape.disabled) do
+            pcall(function()
+                seat.Disabled = false
+            end)
+        end
+        Escape.disabled = {}
+    end
+
+    function Actions.setEscapeSeat(on)
+        if not on then
+            if not Escape.on then
+                return true, "Seat escape is already off."
+            end
+            escapeOff()
+            return true, "Seat escape off. The next meeting will seat you normally."
+        end
+        if Escape.on then
+            return true, "Seat escape is already on."
+        end
+        local _, hum = myBody()
+        if not hum then
+            return false, MSG.noBodyAct or "You have no living character to move."
+        end
+        Escape.on = true
+        -- Kursi dimatikan lokal biar nggak langsung kesedot duduk lagi pas jalan di dekatnya.
+        local sr = seatsRoot()
+        if sr then
+            for _, d in ipairs(sr:GetDescendants()) do
+                if (d:IsA("Seat") or d:IsA("VehicleSeat")) and not d.Disabled then
+                    local ok = pcall(function()
+                        d.Disabled = true
+                    end)
+                    if ok then
+                        Escape.disabled[d] = true
+                    end
+                end
+            end
+        end
+        Escape.conn = connect(RunService.Heartbeat, function()
+            pcall(unseatOnce)
+        end)
+        local was = unseatOnce()
+        return true, was and "You are out of your seat. Everyone can see you walking around."
+            or "On. Whenever the game seats you, you get pulled back out."
+    end
+
+    -- Titik tengah lingkaran kursi, lalu raycast ke bawah buat cari permukaan meja.
+    local function tableTop()
+        local sr = seatsRoot()
+        if not sr then
+            return nil
+        end
+        local sum, n = Vector3.new(0, 0, 0), 0
+        for _, d in ipairs(sr:GetDescendants()) do
+            if d:IsA("BasePart") then
+                sum = sum + d.Position
+                n = n + 1
+            end
+        end
+        if n == 0 then
+            return nil
+        end
+        local center = sum / n
+        local ignore = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Character then
+                ignore[#ignore + 1] = p.Character
+            end
+        end
+        local hitPos
+        pcall(function()
+            local params = RaycastParams.new()
+            params.FilterType = Enum.RaycastFilterType.Exclude
+            params.FilterDescendantsInstances = ignore
+            local res = workspace:Raycast(center + Vector3.new(0, 25, 0), Vector3.new(0, -60, 0), params)
+            if res then
+                hitPos = res.Position
+            end
+        end)
+        return (hitPos or center) + Vector3.new(0, 3.2, 0)
+    end
+
+    function Actions.toTable()
+        local char, hum, root = myBody()
+        if not char then
+            return false, MSG.noBodyAct or "You have no living character to move."
+        end
+        local pos = tableTop()
+        if not pos then
+            return false, "Meeting table not found on this map."
+        end
+        unseatOnce()
+        local look = root.CFrame.LookVector
+        local flat = Vector3.new(look.X, 0, look.Z)
+        local cf = (flat.Magnitude > 0.01) and CFrame.new(pos, pos + flat) or CFrame.new(pos)
+        if not placeAt(char, root, cf) then
+            return false, "Teleport failed."
+        end
+        if hum.SeatPart then
+            return true, "Moved, but the game is still holding your seat. Turn on Escape meeting seat."
+        end
+        return true, "Standing on the table."
+    end
+
     function Actions.status()
         return {
             fakeCrawl = Crawl.on,
@@ -1838,10 +2309,12 @@ return function(ctx)
             target = Actions.getTarget(),
             lastMethod = Last.method,
             busy = Busy.on,
+            escapeSeat = Escape.on,
         }
     end
 
     function Actions.stop()
+        pcall(escapeOff)
         pcall(crawlOff)
         pcall(ghostOff, nil)
         pcall(bringOff, nil)
@@ -1880,6 +2353,14 @@ return function(ctx)
             end
         end)
     end)
+
+    -- Unload (Janitor) ikut matikan semuanya: render-step binding, track crawl yang looped, WalkSpeed.
+    -- stop() idempotent, jadi aman kalau integrator juga memanggilnya sendiri.
+    if type(ctx.track) == "function" then
+        pcall(ctx.track, function()
+            pcall(Actions.stop)
+        end)
+    end
 
     -- Hook khusus test
     Actions._test = {

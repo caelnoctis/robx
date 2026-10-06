@@ -17,6 +17,8 @@ return function(ctx)
     function A.tpStabReturn() return false, "The stab handler has not loaded yet -- try again in a second." end
     function A.tpHealReturn() return false, "Doctor only." end
     function A.setBring(on) return true, "Only you see them move." end
+    function A.setEscapeSeat(on) return true, "seat escape " .. tostring(on) end
+    function A.toTable() return true, "Standing on the table." end
     function A.status() return {} end
     function A.stop() end
     return A

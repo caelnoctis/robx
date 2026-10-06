@@ -115,6 +115,18 @@ return function(ctx)
     local reqCache = {}
     local reqFail = {}
 
+    function G.requireAllowed(inst)
+        local shared = ReplicatedStorage:FindFirstChild("shared")
+        local cfg = shared and shared:FindFirstChild("configurations")
+        if not cfg then
+            return false
+        end
+        local ok, inside = pcall(function()
+            return inst:IsDescendantOf(cfg)
+        end)
+        return ok and inside or false
+    end
+
     function G.require(target)
         if not G.caps.require then
             return nil, "require unsupported"
@@ -125,6 +137,12 @@ return function(ctx)
         end
         if typeof(inst) ~= "Instance" or not inst:IsA("ModuleScript") then
             return nil, "module not found"
+        end
+        -- Di Xeno, require modul client (controller) MENJALANKAN ULANG kodenya dan error di tengah
+        -- jalan; efek sampingnya bisa merusak kontrol game (tombol stab / tembak hilang). Jadi cuma
+        -- config data murni yang boleh di-require.
+        if not G.requireAllowed(inst) then
+            return nil, "blocked: only shared.configurations modules are required"
         end
         local cached = reqCache[inst]
         if cached ~= nil then
@@ -356,6 +374,17 @@ return function(ctx)
 
     -- candidates: list nama (case-insensitive). Exact match dulu, lalu substring.
     function G.findAnimation(candidates)
+        local p1 = G.resolve("assets.animations.player1")
+        if p1 then
+            for _, c in ipairs(candidates) do
+                local lc = string.lower(c)
+                for _, a in ipairs(p1:GetChildren()) do
+                    if a:IsA("Animation") and string.lower(a.Name) == lc then
+                        return a
+                    end
+                end
+            end
+        end
         local map = G.scanAnimations(false)
         for _, c in ipairs(candidates) do
             local a = map[string.lower(c)]
@@ -396,10 +425,12 @@ return function(ctx)
         vigilante = "TOWN",
         janitor = "TOWN",
         detainer = "TOWN",
+        civilian = "TOWN",
     }
     local FALLBACK_ROLES = {
         "Mafia", "Witch", "Bodyguard", "Saboteur", "Mirage", "Poisoner", "Phantom", "Harbinger",
         "Detective", "Doctor", "Vigilante", "Janitor", "Detainer", "Judge", "Suppressor", "Jester", "Snow Spirit",
+        "Civilian",
     }
     -- Nama folder RoleNetworks -> nama role.
     local ROLE_ALIASES = { snowspirit = "snow spirit" }
@@ -408,6 +439,7 @@ return function(ctx)
         evil = "EVIL", mafia = "EVIL",
         veil = "VEIL", ["the veil"] = "VEIL",
         town = "TOWN", good = "TOWN", innocent = "TOWN", civilian = "TOWN", villager = "TOWN",
+        neutral = "NEUTRAL",
     }
 
     function G.normalizeTeam(v)
@@ -433,7 +465,7 @@ return function(ctx)
             entry = { name = name }
             map[key] = entry
         end
-        entry.team = entry.team or G.normalizeTeam(team) or FALLBACK_TEAMS[key] or FALLBACK_TEAMS[string.gsub(key, " ", "")]
+        entry.team = entry.team or G.normalizeTeam(team) or FALLBACK_TEAMS[key] or FALLBACK_TEAMS[(string.gsub(key, " ", ""))]
     end
 
     local function teamField(t)
@@ -477,23 +509,46 @@ return function(ctx)
         end
     end
 
-    -- teamsConfig: cari key berupa nama tim yang isinya daftar role.
-    local function parseTeamsConfig(cfg, map, depth)
-        if type(cfg) ~= "table" or depth > 3 then
+    -- teamsConfig game: punya getTeamOfRole(role) dan teams.<tim>.roles. Cuma MENETAPKAN tim untuk
+    -- role yang sudah dikenal; nggak pernah menambah "role" baru (dulu field seperti "roles" atau
+    -- "The Veil" ikut terbaca sebagai nama role).
+    local function teamNameOf(v)
+        if type(v) == "table" then
+            v = rawget(v, "name") or rawget(v, "Name") or rawget(v, "team")
+        end
+        return G.normalizeTeam(v)
+    end
+
+    local function parseTeamsConfig(cfg, map)
+        if type(cfg) ~= "table" then
             return
         end
-        for k, v in pairs(cfg) do
-            local team = type(k) == "string" and G.normalizeTeam(k) or nil
-            if team and type(v) == "table" then
-                for k2, v2 in pairs(v) do
-                    if type(v2) == "string" then
-                        addRole(map, v2, team)
-                    elseif type(k2) == "string" and (v2 == true or type(v2) == "table") then
-                        addRole(map, k2, team)
+        local fn = rawget(cfg, "getTeamOfRole")
+        if type(fn) == "function" then
+            for key, entry in pairs(map) do
+                if not string.find(key, " ", 1, true) then
+                    local ok, res = pcall(fn, key)
+                    local t = ok and teamNameOf(res) or nil
+                    if t then
+                        entry.team = t
                     end
                 end
-            elseif type(v) == "table" then
-                parseTeamsConfig(v, map, depth + 1)
+            end
+        end
+        local teams = rawget(cfg, "teams")
+        if type(teams) == "table" then
+            for teamKey, info in pairs(teams) do
+                local t = G.normalizeTeam(teamKey) or (type(info) == "table" and teamNameOf(info)) or nil
+                local roles = type(info) == "table" and rawget(info, "roles") or nil
+                if t and type(roles) == "table" then
+                    for k, v in pairs(roles) do
+                        local name = type(v) == "string" and v or (type(k) == "string" and k or nil)
+                        local entry = name and map[string.lower(name)]
+                        if entry and not entry.team then
+                            entry.team = t
+                        end
+                    end
+                end
             end
         end
     end
@@ -506,7 +561,7 @@ return function(ctx)
         local rolesCfg = G.require("shared.configurations.roles")
         parseRolesConfig(rolesCfg, map)
         local teamsCfg = G.require("shared.configurations.teamsConfig")
-        parseTeamsConfig(teamsCfg, map, 0)
+        parseTeamsConfig(teamsCfg, map)
         for _, n in ipairs(FALLBACK_ROLES) do
             addRole(map, n, nil)
         end
@@ -549,7 +604,7 @@ return function(ctx)
         end
         local key = string.lower(roleName)
         local e = G.roles(false)[ROLE_ALIASES[key] or key]
-        return e and e.team or FALLBACK_TEAMS[key] or FALLBACK_TEAMS[string.gsub(key, " ", "")]
+        return e and e.team or FALLBACK_TEAMS[key] or FALLBACK_TEAMS[(string.gsub(key, " ", ""))]
     end
 
     function G.gameConfig()

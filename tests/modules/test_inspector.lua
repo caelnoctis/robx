@@ -38,6 +38,29 @@ check(#St.errs == 0, "no errors at load: " .. table.concat(St.errs, " | "))
 local gui = I._test.gui()
 check(gui ~= nil and gui.Parent ~= nil, "gui mounted")
 check(gui and gui.Parent == game:GetService("CoreGui"), "gui in CoreGui when gethui missing")
+-- cloneref: container hasil gethui() tidak == Parent kanonik yang dibaca balik, tapi parenting berhasil
+do
+    local realHui = __mk("Folder", { Name = "HiddenUI" })
+    local cloneHui = __mk("Folder", { Name = "HiddenUI" })
+    gethui = function()
+        return cloneHui
+    end
+    local fakeGui = setmetatable({}, {
+        __index = function(s, k)
+            if k == "Parent" then
+                return rawget(s, "_p")
+            end
+        end,
+        __newindex = function(s, k, v)
+            if k == "Parent" then
+                rawset(s, "_p", (v == cloneHui) and realHui or v)
+            end
+        end,
+    })
+    local where = I._test.mount(fakeGui)
+    check(where == cloneHui and rawget(fakeGui, "_p") == realHui, "mount keeps cloneref'd gethui container (no fallthrough to PlayerGui)")
+    gethui = nil
+end
 
 ----------------------------------------------------------------------
 -- Mock executor (lazy lookup)
@@ -145,7 +168,13 @@ local assets = __mk("Folder", { Name = "assets" }, RS)
 local animsF = __mk("Folder", { Name = "animations" }, assets)
 local p1 = __mk("Folder", { Name = "player1" }, animsF)
 local knifeAnim = __mk("Animation", { Name = "KnifeSwing", AnimationId = "rbxassetid://222" }, p1)
-__mk("Animation", { Name = "Wounded Crawling", AnimationId = "rbxassetid://111" }, p1)
+local crawlRS = __mk("Animation", { Name = "Wounded Crawling", AnimationId = "rbxassetid://111" }, p1)
+local runAnim = __mk("Animation", { Name = "RunCustom", AnimationId = "rbxassetid://555" }, p1)
+-- animasi yang disimpan di dalam Tool (Backpack / StarterPack)
+local aliceGlock = __mk("Tool", { Name = "Glock" }, alice:FindFirstChildOfClass("Backpack"))
+__mk("Animation", { Name = "gunShot", AnimationId = "rbxassetid://777" }, __mk("Folder", { Name = "Animations" }, aliceGlock))
+local medkitTool = __mk("Tool", { Name = "Medkit" }, game:GetService("StarterPack"))
+__mk("Animation", { Name = "heal", AnimationId = "rbxassetid://888" }, medkitTool)
 local phase = __mk("StringValue", { Name = "gamePhase", Value = "Night" }, RS)
 __mk("Tool", { Name = "Glock" }, RS)
 RS:SetAttribute("roundId", 7)
@@ -165,6 +194,14 @@ local hiddenFrame = __mk("Frame", { Name = "HiddenFrame", Visible = false }, hud
 __mk("TextLabel", { Name = "Inner", Text = "INNER_HIDDEN" }, hiddenFrame)
 local offGui = __mk("ScreenGui", { Name = "OffGui", Enabled = false }, pg)
 __mk("TextLabel", { Name = "X", Text = "DISABLED_GUI_TEXT" }, offGui)
+-- daftar hasil clone template: semua label punya full name yang sama
+local voteList = __mk("Frame", { Name = "VoteList", Visible = true }, hud)
+local function mkRow(n)
+    local row = __mk("Frame", { Name = "Template", Visible = true }, voteList)
+    return __mk("TextLabel", { Name = "PlayerName", Text = n, Visible = true }, row)
+end
+local rowLbls = { mkRow("Alice"), mkRow("Bob"), mkRow("Cara") }
+local ROWKEY = "Me.PlayerGui.HUD.VoteList.Template.PlayerName"
 
 local tcs = game:GetService("TextChatService")
 tcs.ChatVersion = "TextChatService"
@@ -223,10 +260,10 @@ check(has(t, "deepest = {1 keys}"), "module depth cap 3")
 check(has(t, "roles keys @shared.configurations.roles: Doctor, Mafia"), "roles module keys")
 check(has(t, "roles keys @shared.configurations.gameConfig.roles: Saboteur, Witch"), "roles sub-table keys")
 check(has(t, "client.controllers.roleController -> Me.PlayerScripts.client.controllers.roleController"), "controller resolved in PlayerScripts")
-check(has(t, 'currentRole = "Mafia"'), "controller fields")
-check(has(t, "handleMafiaStab = function(1, vararg)"), "function signature via debug.info")
-check(has(t, "require@2: ok (table, 2 keys, metatable)"), "metatable presence")
-check(has(t, "client.controllers.brokenController ->") and has(t, "require@2: error:") and has(t, "exploded"), "discovered failing controller")
+-- v2.1: modul client TIDAK di-require (di Xeno itu menjalankan ulang kodenya dan merusak kontrol game)
+check(not has(t, 'currentRole = "Mafia"'), "controller is never required (fields not dumped)")
+check(has(t, "require: skipped (not a shared.configurations data module"), "controller require skipped with reason")
+check(has(t, "client.controllers.brokenController ->") and not has(t, "exploded"), "broken controller not executed")
 check(has(t, "shared.configurations.votingConfig ->") and has(t, "voteTime = 30"), "discovered config child")
 check(has(t, "client.modules.topbarBus -> not found"), "missing module")
 check(has(t, "assets.animations.player1 -> ReplicatedStorage.assets.animations.player1 [Folder]") and has(t, "not a ModuleScript"), "non-module path")
@@ -236,6 +273,10 @@ check(has(t, "KnifeSwing | rbxassetid://222 | ReplicatedStorage.assets.animation
 check(has(t, "[ReplicatedStorage] ReplicatedStorage.Glock"), "tool in RS")
 check(has(t, "[Alice.Character] Alice.Steel Knife"), "tool on character")
 check(has(t, "[LocalPlayer.Backpack] Me.Backpack.Knife"), "tool in local backpack")
+check(has(t, "gunShot | rbxassetid://777 | Alice.Backpack.Glock.Animations.gunShot"), "animation inside a Backpack tool scanned")
+check(has(t, "heal | rbxassetid://888 | StarterPack.Medkit.heal"), "animation inside a StarterPack tool scanned")
+check(has(t, "[Alice.Backpack] Alice.Backpack.Glock") and has(t, "anims: gunShot=rbxassetid://777"), "TOOLS lists animation ids inside tools")
+check(has(t, "require mode: identity 2 via setthreadidentity"), "module probe states require mode")
 -- players
 check(has(t, "-- Me ") and has(t, "(YOU)"), "local player marked")
 check(has(t, 'Character attrs: DisguiseName="Bob"'), "character attrs")
@@ -295,10 +336,17 @@ end)
 __SignalNames.Seated = true
 __SignalNames.PromptButtonHoldBegan = true
 local ncMethod, isCaller, hooked, hookCount = nil, false, nil, 0
+local gnmBoom, ccBoom = false, false
 getnamecallmethod = function()
+    if gnmBoom then
+        error("gnm boom")
+    end
     return ncMethod
 end
 checkcaller = function()
+    if ccBoom then
+        error("cc boom")
+    end
     return isCaller
 end
 newcclosure = function(f)
@@ -325,9 +373,15 @@ __SignalNames.HealthChanged = true
 local animate = __mk("LocalScript", { Name = "Animate" }, bob.Character)
 local walkAnim = __mk("Animation", { Name = "WalkAnim", AnimationId = "rbxassetid://333" }, __mk("StringValue", { Name = "walk" }, animate))
 local crawlAnim = __mk("Animation", { Name = "CrawlAnim", AnimationId = "rbxassetid://444" }, __mk("StringValue", { Name = "crawl" }, animate))
+-- Bob lagi downed waktu Start: game menaruh id crawl (juga ada di ReplicatedStorage) di slot idle
+local walkSlot = animate:FindFirstChild("walk")
+__mk("Animation", { Name = "IdleAnim", AnimationId = "rbxassetid://111" }, __mk("StringValue", { Name = "idle" }, animate))
 
 local okL = I.startLive()
 check(okL == true and St.live == true, "startLive")
+check(St.defaultAnims["333"] == true and St.defaultAnims["111"] == nil, "Animate slot id that is also a game animation is not default")
+check(not has(liveSection(I.text()), "initial:"), "no 'initial' attribute lines for instances present at start")
+check(not has(liveSection(I.text()), "already tagged"), "no 'already tagged' lines at start")
 check(I._test.buttons().live.Text == "Stop live log", "API startLive refreshes the UI at once")
 check(hookCount == 1 and type(hooked) == "function", "namecall hook installed once")
 check(getgenv().NoctisENIX_InspectorHook and getgenv().NoctisENIX_InspectorHook.installed == true, "hook state stored in genv")
@@ -349,6 +403,34 @@ walkTr:Play()
 T = T + 2
 walkTr:Play()
 bobAnimator:LoadAnimation(crawlAnim):Play()
+-- crawl id juga ada di slot idle Bob: tetap dianggap animasi game (dedupe 1 dtk saja)
+local caraAnimator = cara.Character:FindFirstChildOfClass("Humanoid"):FindFirstChildOfClass("Animator")
+local caraCrawl = caraAnimator:LoadAnimation(crawlRS)
+caraCrawl:Play()
+T = T + 2
+caraCrawl:Play()
+-- set gerak custom (looped, prioritas Movement): sekali per 10 dtk per pemain+id
+local runTr = aliceAnimator:LoadAnimation(runAnim)
+runTr.Looped = true
+runTr.Priority = Enum.AnimationPriority.Movement
+runTr:Play()
+T = T + 2
+runTr:Play()
+T = T + 2
+runTr:Play()
+T = T + 7
+runTr:Play()
+-- tool baru di Backpack + tool yang dipegang: id animasi di dalamnya ikut terpetakan
+local bobBp = bob:FindFirstChildOfClass("Backpack")
+local rev2 = __mk("Tool", { Name = "Revolver2" }, bobBp)
+local shootAnim = __mk("Animation", { Name = "shoot", AnimationId = "rbxassetid://999" }, rev2)
+bobBp.DescendantAdded:Fire(rev2)
+bobBp.DescendantAdded:Fire(shootAnim)
+local sword = __mk("Tool", { Name = "Sword" }, bob.Character)
+__mk("Animation", { Name = "slash", AnimationId = "rbxassetid://1001" }, sword)
+bob.Character.ChildAdded:Fire(sword)
+bobAnimator:LoadAnimation(__mk("Animation", { Name = "Animation", AnimationId = "rbxassetid://999" })):Play()
+bobAnimator:LoadAnimation(__mk("Animation", { Name = "Animation", AnimationId = "rbxassetid://1001" })):Play()
 -- HUM health: regen kecil diabaikan
 local eveHum = eve.Character:FindFirstChildOfClass("Humanoid")
 eveHum.HealthChanged:Fire(99)
@@ -359,6 +441,10 @@ eveHum.HealthChanged:Fire(100)
 -- CHAT
 tcs.MessageReceived:Fire({ Text = "The Harbinger thinks <b>Bob</b> is a Mafia.", PrefixText = "", TextSource = nil })
 tcs.MessageReceived:Fire({ Text = "hello", PrefixText = "Alice:", TextSource = { UserId = 2, Name = "2" } })
+-- burst pengumuman sistem (vote) tidak boleh ke-suppress di 20 baris
+for i = 1, 40 do
+    tcs.MessageReceived:Fire({ Text = "Voter" .. i .. " voted for Bob", PrefixText = "", TextSource = nil })
+end
 -- REMOTE IN
 roleRemote.OnClientEvent:Fire("Mafia", { team = "EVIL", list = { 1, 2 } }, alice)
 local late = __mk("RemoteEvent", { Name = "LateEvent" }, remotes)
@@ -382,6 +468,16 @@ task.defer = nil
 ncMethod = "FireServer"
 check(hooked(stabRemote, "NO_DEFER") == "orig:FireServer", "hook forwards without task.defer")
 task.defer = savedDefer
+-- getnamecallmethod / checkcaller error: hook tidak boleh melempar error ke game, tetap forward
+ncMethod = "FireServer"
+gnmBoom = true
+local okGB, rGB = pcall(hooked, stabRemote, "GNM_BOOM")
+gnmBoom = false
+ccBoom = true
+local okCB, rCB = pcall(hooked, stabRemote, "CC_BOOM")
+ccBoom = false
+check(okGB and rGB == "orig:FireServer", "hook survives getnamecallmethod error: " .. tostring(rGB))
+check(okCB and rCB == "orig:FireServer", "hook survives checkcaller error: " .. tostring(rCB))
 -- TAG
 CS:AddTag(eve.Character, "Detained")
 CS:AddTag(door1, "CustomTag")
@@ -398,6 +494,9 @@ local banana = __mk("Part", { Name = "Banana", Position = Vector3.new(1, 2, 3) }
 workspace.DescendantAdded:Fire(banana)
 workspace.DescendantAdded:Fire(__mk("Part", { Name = "Rock" }, workspace))
 workspace.DescendantAdded:Fire(__mk("Sound", { Name = "KnifeSound" }, workspace))
+-- darah di dalam karakter korban dicatat (dengan pemilik); tool di karakter tidak (sudah TOOL)
+workspace.DescendantAdded:Fire(__mk("Part", { Name = "BloodPuddle" }, alice.Character))
+workspace.DescendantAdded:Fire(__mk("Tool", { Name = "Knife2" }, alice.Character))
 -- SEAT
 local seat = __mk("Seat", { Name = "MeetingSeat" }, workspace)
 me.Character:FindFirstChildOfClass("Humanoid").Seated:Fire(true, seat)
@@ -406,10 +505,22 @@ local zed = __mkPlayer("Zed", {})
 game:GetService("Players").PlayerAdded:Fire(zed)
 zed:SetAttribute("Role", "Witch")
 local zchar = __mk("Model", { Name = "Zed" })
-__mk("Humanoid", {}, zchar)
+-- karakter baru dibangun server dengan state yang sudah terisi (tidak memicu AttributeChanged)
+local zhum = __mk("Humanoid", {}, zchar)
+zhum:SetAttribute("abilitiesEnabled", true)
+zchar:SetAttribute("RoleTeam", "EVIL")
+__mk("StringValue", { Name = "Disguise", Value = "Bob" }, zchar)
 zed.Character = zchar
 zed.CharacterAdded:Fire(zchar)
 zchar:SetAttribute("Ragdolled", true)
+-- HRP nyusul setelah CharacterAdded, sudah bawa attribute
+local zhrp = __mk("Part", { Name = "HumanoidRootPart" })
+zhrp:SetAttribute("Carried", false)
+zhrp.Parent = zchar
+zchar.ChildAdded:Fire(zhrp)
+-- pemain join dengan attribute yang sudah ter-replikasi
+local yan = __mkPlayer("Yan", { attr = { "Role", "Witch" } })
+game:GetService("Players").PlayerAdded:Fire(yan)
 -- VALUE
 phase.Value = "Day"
 phase:GetPropertyChangedSignal("Value"):Fire()
@@ -452,6 +563,27 @@ check(has(L1, 'VALUE ReplicatedStorage.gamePhase = "Day"'), "VALUE change")
 check(has(L1, "MAP Workspace.Map.Doors.Door1 Locked = true  (was false)"), "MAP door attribute")
 check(has(L1, "MAP + Door2 [Model] in Workspace.Map.Doors"), "MAP child added")
 check(has(L1, "HUM Me WalkSpeed = 4"), "HUM walkspeed")
+-- default anim set / gerak custom
+check(count(L1, 'ANIM Cara "Wounded Crawling" id=111 -> Wounded Crawling') == 2 and not string.find(L1, 'Wounded Crawling[^\n]*%[default%]'), "game crawl id in an Animate slot is not throttled as default")
+check(count(L1, 'ANIM Alice "RunCustom" id=555') == 2 and has(L1, "looped=true prio=Movement"), "looped Movement track deduped per 10 s: " .. count(L1, 'ANIM Alice "RunCustom"'))
+-- animasi tool
+check(St.animNames["999"] == "shoot" and has(L1, 'ANIM Bob "Animation" id=999 -> shoot'), "Backpack tool animation resolved live")
+check(St.animNames["1001"] == "slash" and has(L1, 'ANIM Bob "Animation" id=1001 -> slash'), "equipped tool animation resolved live")
+check(St.animNames["777"] == "gunShot", "Backpack tool animation mapped at start")
+-- namecall hook error
+check(not has(L1, "GNM_BOOM") and not has(L1, "CC_BOOM"), "nothing logged when getnamecallmethod/checkcaller fail")
+-- chat sistem
+check(count(L1, 'CHAT SYSTEM [?] prefix="" text="Voter') == 40 and not has(L1, "suppressed") , "system chat burst not suppressed: " .. count(L1, 'text="Voter'))
+-- SPAWN di karakter
+check(has(L1, "SPAWN BloodPuddle [Part] at") and has(L1, "in Alice [Alice]"), "SPAWN logs matching part inside a character with owner")
+check(not has(L1, "SPAWN Knife2"), "SPAWN skips tools inside characters")
+-- state awal instance baru
+check(has(L1, 'ATTR Zed.Character initial: RoleTeam="EVIL"'), "initial character attributes on CharacterAdded")
+check(has(L1, "ATTR Zed.Humanoid initial: abilitiesEnabled=true"), "initial humanoid attributes on CharacterAdded")
+check(has(L1, 'VALUE Zed.Character.Disguise = "Bob" (initial)'), "initial character value on CharacterAdded")
+check(has(L1, "ATTR Zed.HRP initial: Carried=false"), "initial attributes of a part streamed in after CharacterAdded")
+check(has(L1, "PLAYER Yan joined") and has(L1, 'ATTR Yan initial: Role="Witch"'), "initial player attributes on PlayerAdded")
+check(not has(L1, "Alice.Character initial") and not has(L1, "Cara initial"), "no initial lines for players hooked at start")
 local badLine = nil
 for line in string.gmatch(L1, "[^\n]+") do
     if line ~= "==== LIVE LOG ====" and not string.match(line, "^%[%+%d+%.%d%ds%] [%u_]+ ") then
@@ -483,6 +615,32 @@ check(has(L2, '"Night 3"') and not has(L2, '"Night 4"'), "GUI ticking digits thr
 check(has(L2, 'GUI Me.PlayerGui.HUD.Phase: "Day 1"'), "GUI non-digit change logged")
 check(not has(L2, "INVISIBLE_NEW") and count(L2, "RoleLabel") == 0, "GUI skips hidden + unchanged texts")
 check(has(L2, "TAG +CustomTag Workspace.Map.Doors.Door1.Handle"), "TAG rescan hooks new tags")
+check(has(L2, "TAG +CustomTag Workspace.Map.Doors.Door1 (already tagged when discovered)"), "TAG rescan logs instances tagged before the hook")
+check(count(L2, ROWKEY) == 0, "GUI same-named template rows not re-logged every scan: " .. count(L2, ROWKEY))
+-- satu baris berubah -> sekali; daftar dibangun ulang dengan teks sama -> tidak ada baris baru
+rowLbls[2].Text = "Bob (DEAD)"
+T = T + 3
+RunService.Heartbeat:Fire(0.016)
+T = T + 3
+RunService.Heartbeat:Fire(0.016)
+for _, c in ipairs(voteList:GetChildren()) do
+    c:Destroy()
+end
+rowLbls = { mkRow("Cara"), mkRow("Alice"), mkRow("Bob (DEAD)") }
+T = T + 3
+RunService.Heartbeat:Fire(0.016)
+-- hitungan vote per baris: tiap bentuk teks punya throttle sendiri
+rowLbls[1].Text = "Cara 1"
+T = T + 3
+RunService.Heartbeat:Fire(0.016)
+rowLbls[2].Text = "Alice 1"
+rowLbls[1].Text = "Cara 2"
+T = T + 3
+RunService.Heartbeat:Fire(0.016)
+local L2b = liveSection(I.text())
+check(count(L2b, ROWKEY .. ': "Bob (DEAD)"') == 1, "GUI changed template row logged once: " .. count(L2b, ROWKEY .. ': "Bob (DEAD)"'))
+check(count(L2b, ROWKEY .. ': "Alice"') == 0 and count(L2b, ROWKEY .. ': "Cara"') == 0, "GUI rebuilt list with same texts not re-logged")
+check(has(L2b, ROWKEY .. ': "Alice 1"') and has(L2b, ROWKEY .. ': "Cara 1"') and has(L2b, ROWKEY .. ': "Cara 2"'), "GUI per-row count changes of different rows both logged")
 check(string.find(I._test.gui():FindFirstChild("Main"):FindFirstChild("Status").Text, "Live: ON", 1, true) ~= nil, "status label updated by heartbeat")
 
 -- Rate limit: 20 baris / 10 dtk per sumber, lalu 1 baris suppressed
@@ -511,21 +669,143 @@ CS:AddTag(bob.Character, "Detained")
 check(I.lines() == before, "no logging after stop")
 check(has(liveSection(I.text()), "LIVE stopped"), "stop marker")
 
--- restart: rehook, hook tidak dipasang dua kali
+-- restart: rehook, hook tidak dipasang dua kali.
+-- getconnections per sinyal: LazyRole belum punya listener game -> jangan connect (antrean event Roblox)
+local lazy = __mk("RemoteEvent", { Name = "LazyRole" }, remotes)
+local listening = { [roleRemote.OnClientEvent] = true, [stabRemote.OnClientEvent] = true, [late.OnClientEvent] = true }
+getconnections = function(sig)
+    if listening[sig] then
+        return { { Enabled = true } }
+    end
+    return {}
+end
 I.startLive()
 me.Character:SetAttribute("Again", 1)
 check(has(liveSection(I.text()), "LIVE started (session 2)") and has(I.text(), "ATTR Me.Character Again = 1"), "restart rehooks")
 check(hookCount == 1, "namecall hook not reinstalled")
--- getgc tidak boleh melaporkan tabel milik inspector sendiri (St.hk di-key pakai Player)
+check(has(liveSection(I.text()), "1 waiting for a game listener"), "remote without game listener is deferred")
+lazy.OnClientEvent:Fire("EARLY_EVENT")
+roleRemote.OnClientEvent:Fire("S2_ROLE")
+check(St.remoteWait[lazy] ~= nil and not has(I.text(), "EARLY_EVENT"), "deferred remote not connected yet")
+check(has(I.text(), 'RoleReveal ("S2_ROLE")'), "remote with a game listener hooked at start")
+listening[lazy.OnClientEvent] = true
+T = T + 2.5
+RunService.Heartbeat:Fire(0.016)
+lazy.OnClientEvent:Fire("LAZY_AFTER")
+check(St.remoteWait[lazy] == nil and has(I.text(), 'REMOTE_IN ReplicatedStorage.Remotes.LazyRole ("LAZY_AFTER")'), "deferred remote hooked once the game listens")
+-- tanpa getconnections: remote baru ditunda REMOTE_GRACE (5 dtk)
+getconnections = nil
+local freshR = __mk("RemoteEvent", { Name = "FreshEvent" }, remotes)
+RS.DescendantAdded:Fire(freshR)
+freshR.OnClientEvent:Fire("FRESH_1")
+T = T + 2.5
+RunService.Heartbeat:Fire(0.016)
+freshR.OnClientEvent:Fire("FRESH_2")
+T = T + 3
+RunService.Heartbeat:Fire(0.016)
+freshR.OnClientEvent:Fire("FRESH_3")
+local tR = I.text()
+check(not has(tR, "FRESH_1") and not has(tR, "FRESH_2") and has(tR, 'REMOTE_IN ReplicatedStorage.Remotes.FreshEvent ("FRESH_3")'), "new remote hooked after the grace period")
+-- getgc tidak boleh melaporkan tabel milik inspector sendiri (St.hk di-key pakai Player), salinan
+-- GetAttributes ({Role="Doctor"}) dan himpunan teks GUI (berisi nama pemain)
+local attrCopies = {}
+local realGetAttributes = __Methods.GetAttributes
+__Methods.GetAttributes = function(self)
+    local a = realGetAttributes(self)
+    attrCopies[#attrCopies + 1] = a
+    return a
+end
+local guiSets = 0
 getgc = function()
-    return { St.hk, St, St.tagHooked, { role = "Spy" } }
+    local list = { St.hk, St, St.tagHooked, { role = "Spy" } }
+    for _, a in ipairs(attrCopies) do
+        list[#list + 1] = a
+    end
+    local gp = St.guiPrev
+    if gp then
+        list[#list + 1] = gp
+        for _, set in pairs(gp) do
+            guiSets = guiSets + 1
+            list[#list + 1] = set
+            list[#list + 1] = set.t
+            list[#list + 1] = set.s
+        end
+    end
+    return list
 end
 I.snapshot({ noRequire = true })
+__Methods.GetAttributes = realGetAttributes
+local roleCopies = 0
+for _, a in ipairs(attrCopies) do
+    if a.Role ~= nil then
+        roleCopies = roleCopies + 1
+    end
+end
+check(roleCopies > 0 and guiSets > 0, "getgc test sees attribute copies and GUI text sets: " .. roleCopies .. "/" .. guiSets)
 local tg = I.text()
 local s3 = string.find(tg, "######## SNAPSHOT #3", 1, true)
 check(s3 ~= nil and string.find(tg, "key hits: 1, player-keyed: 0", s3, true) ~= nil, "getgc skips inspector-owned tables")
 check(has(liveSection(tg), "SNAPSHOT #3 taken"), "snapshot marker in live log")
 getgc = nil
+I.stopLive()
+
+-- hookmetamethod tanpa original + tanpa getrawmetatable: hook tetap meneruskan, logging mati
+do
+    local savedHMM = hookmetamethod
+    local hooked2 = nil
+    getgenv().NoctisENIX_InspectorHook = nil
+    getrawmetatable = nil
+    hookmetamethod = function(obj, mm, fn)
+        hooked2 = fn
+        return nil
+    end
+    I.startLive()
+    check(type(hooked2) == "function" and string.find(tostring(St.outStatus), "^off %(hookmetamethod gave no original") ~= nil, "no-original hook reported off: " .. tostring(St.outStatus))
+    check(getgenv().NoctisENIX_InspectorHook.sink == nil, "no-original hook has no sink")
+    ncMethod = "GetChildren"
+    local okP, kids = pcall(hooked2, remotes)
+    check(okP and type(kids) == "table" and #kids >= 3, "no-original hook passes the call through via __index: " .. tostring(kids))
+    gnmBoom = true
+    local okP2 = pcall(hooked2, remotes)
+    gnmBoom = false
+    check(okP2, "no-original hook does not throw when getnamecallmethod fails")
+    I.stopLive()
+    -- original dari getrawmetatable (diambil sebelum hook) dipakai kalau hookmetamethod return nil
+    getgenv().NoctisENIX_InspectorHook = nil
+    getrawmetatable = function()
+        return {
+            __namecall = function(self, ...)
+                return "raw:" .. tostring(ncMethod)
+            end,
+        }
+    end
+    I.startLive()
+    check(St.outStatus == "on", "hook with getrawmetatable fallback is on: " .. tostring(St.outStatus))
+    ncMethod = "FireServer"
+    check(hooked2(stabRemote, "VIA_RAW") == "raw:FireServer", "hook forwards to the pre-captured original")
+    check(has(liveSection(I.text()), "VIA_RAW"), "hook with fallback original logs FireServer")
+    I.stopLive()
+    hookmetamethod = savedHMM
+    getrawmetatable = nil
+end
+
+-- tanpa setthreadidentity: label require jujur (bukan "require@2")
+do
+    local savedSet = setthreadidentity
+    setthreadidentity = nil
+    I.snapshot()
+    local tq = I.text()
+    local sq = string.find(tq, "######## SNAPSHOT #" .. St.snapN, 1, true)
+    check(sq ~= nil and string.find(tq, "require@current (no setthreadidentity): ok", sq, true) ~= nil, "module probe labels current identity without setthreadidentity")
+    check(sq ~= nil and string.find(tq, "require@2:", sq, true) == nil, "no require@2 label without setthreadidentity")
+    check(sq ~= nil and string.find(tq, "require mode: current identity (no setthreadidentity)", sq, true) ~= nil, "require mode line without setthreadidentity")
+    setthreadidentity = savedSet
+end
+
+-- Start berikutnya membangun ulang set default anim (slot walk Bob sudah hilang)
+walkSlot:Destroy()
+I.startLive()
+check(St.defaultAnims["333"] == nil, "default anim set rebuilt at start")
 I.stopLive()
 
 ----------------------------------------------------------------------
@@ -536,7 +816,7 @@ check(okS == true and type(info) == "string" and string.match(info, "^NoctisENIX
 local path = info and string.match(info, "^(%S+)")
 check(folders.NoctisENIX == true, "makefolder called")
 check(path and files[path] ~= nil and files[path] == __clip, "file content == clipboard")
-check(path and has(files[path], "NoctisENIX Inspector v1.0.0") and has(files[path], "executor: MockExec") and has(files[path], "==== LIVE LOG ===="), "saved text has header + live log")
+check(path and has(files[path], "NoctisENIX Inspector v1.1.0") and has(files[path], "executor: MockExec") and has(files[path], "==== LIVE LOG ===="), "saved text has header + live log")
 check(St.lastSave == info, "status keeps last save")
 check(St.savedMark == St.pushed + St.snapN, "save marks everything as saved")
 check(has(I._test.gui():FindFirstChild("Main"):FindFirstChild("Status").Text, "Save: " .. info), "status label shows save path")

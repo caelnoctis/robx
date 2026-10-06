@@ -33,7 +33,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.0.0",
+    Version = "2.1.0",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -160,6 +160,7 @@ local S = {
     espHealth = false,
     notifyRoles = true,
     voteAlert = true,
+    showGuesses = false, -- false = cuma role / tim yang PASTI yang ditampilkan
 
     speedOn = false,
     speed = 32,
@@ -191,8 +192,9 @@ local TeamColors = {
     EVIL = Color3.fromRGB(255, 70, 80),
     VEIL = Color3.fromRGB(255, 196, 70),
     TOWN = Color3.fromRGB(80, 225, 130),
+    NEUTRAL = Color3.fromRGB(200, 170, 255),
 }
-local UNKNOWN_COLOR = Color3.fromRGB(225, 225, 235)
+local UNKNOWN_COLOR = Color3.fromRGB(205, 205, 215)
 
 local function teamColor(team)
     return (team and TeamColors[team]) or UNKNOWN_COLOR
@@ -1657,6 +1659,18 @@ return function(ctx)
     local reqCache = {}
     local reqFail = {}
 
+    function G.requireAllowed(inst)
+        local shared = ReplicatedStorage:FindFirstChild("shared")
+        local cfg = shared and shared:FindFirstChild("configurations")
+        if not cfg then
+            return false
+        end
+        local ok, inside = pcall(function()
+            return inst:IsDescendantOf(cfg)
+        end)
+        return ok and inside or false
+    end
+
     function G.require(target)
         if not G.caps.require then
             return nil, "require unsupported"
@@ -1667,6 +1681,12 @@ return function(ctx)
         end
         if typeof(inst) ~= "Instance" or not inst:IsA("ModuleScript") then
             return nil, "module not found"
+        end
+        -- Di Xeno, require modul client (controller) MENJALANKAN ULANG kodenya dan error di tengah
+        -- jalan; efek sampingnya bisa merusak kontrol game (tombol stab / tembak hilang). Jadi cuma
+        -- config data murni yang boleh di-require.
+        if not G.requireAllowed(inst) then
+            return nil, "blocked: only shared.configurations modules are required"
         end
         local cached = reqCache[inst]
         if cached ~= nil then
@@ -1898,6 +1918,17 @@ return function(ctx)
 
     -- candidates: list nama (case-insensitive). Exact match dulu, lalu substring.
     function G.findAnimation(candidates)
+        local p1 = G.resolve("assets.animations.player1")
+        if p1 then
+            for _, c in ipairs(candidates) do
+                local lc = string.lower(c)
+                for _, a in ipairs(p1:GetChildren()) do
+                    if a:IsA("Animation") and string.lower(a.Name) == lc then
+                        return a
+                    end
+                end
+            end
+        end
         local map = G.scanAnimations(false)
         for _, c in ipairs(candidates) do
             local a = map[string.lower(c)]
@@ -1938,10 +1969,12 @@ return function(ctx)
         vigilante = "TOWN",
         janitor = "TOWN",
         detainer = "TOWN",
+        civilian = "TOWN",
     }
     local FALLBACK_ROLES = {
         "Mafia", "Witch", "Bodyguard", "Saboteur", "Mirage", "Poisoner", "Phantom", "Harbinger",
         "Detective", "Doctor", "Vigilante", "Janitor", "Detainer", "Judge", "Suppressor", "Jester", "Snow Spirit",
+        "Civilian",
     }
     -- Nama folder RoleNetworks -> nama role.
     local ROLE_ALIASES = { snowspirit = "snow spirit" }
@@ -1950,6 +1983,7 @@ return function(ctx)
         evil = "EVIL", mafia = "EVIL",
         veil = "VEIL", ["the veil"] = "VEIL",
         town = "TOWN", good = "TOWN", innocent = "TOWN", civilian = "TOWN", villager = "TOWN",
+        neutral = "NEUTRAL",
     }
 
     function G.normalizeTeam(v)
@@ -1975,7 +2009,7 @@ return function(ctx)
             entry = { name = name }
             map[key] = entry
         end
-        entry.team = entry.team or G.normalizeTeam(team) or FALLBACK_TEAMS[key] or FALLBACK_TEAMS[string.gsub(key, " ", "")]
+        entry.team = entry.team or G.normalizeTeam(team) or FALLBACK_TEAMS[key] or FALLBACK_TEAMS[(string.gsub(key, " ", ""))]
     end
 
     local function teamField(t)
@@ -2019,23 +2053,46 @@ return function(ctx)
         end
     end
 
-    -- teamsConfig: cari key berupa nama tim yang isinya daftar role.
-    local function parseTeamsConfig(cfg, map, depth)
-        if type(cfg) ~= "table" or depth > 3 then
+    -- teamsConfig game: punya getTeamOfRole(role) dan teams.<tim>.roles. Cuma MENETAPKAN tim untuk
+    -- role yang sudah dikenal; nggak pernah menambah "role" baru (dulu field seperti "roles" atau
+    -- "The Veil" ikut terbaca sebagai nama role).
+    local function teamNameOf(v)
+        if type(v) == "table" then
+            v = rawget(v, "name") or rawget(v, "Name") or rawget(v, "team")
+        end
+        return G.normalizeTeam(v)
+    end
+
+    local function parseTeamsConfig(cfg, map)
+        if type(cfg) ~= "table" then
             return
         end
-        for k, v in pairs(cfg) do
-            local team = type(k) == "string" and G.normalizeTeam(k) or nil
-            if team and type(v) == "table" then
-                for k2, v2 in pairs(v) do
-                    if type(v2) == "string" then
-                        addRole(map, v2, team)
-                    elseif type(k2) == "string" and (v2 == true or type(v2) == "table") then
-                        addRole(map, k2, team)
+        local fn = rawget(cfg, "getTeamOfRole")
+        if type(fn) == "function" then
+            for key, entry in pairs(map) do
+                if not string.find(key, " ", 1, true) then
+                    local ok, res = pcall(fn, key)
+                    local t = ok and teamNameOf(res) or nil
+                    if t then
+                        entry.team = t
                     end
                 end
-            elseif type(v) == "table" then
-                parseTeamsConfig(v, map, depth + 1)
+            end
+        end
+        local teams = rawget(cfg, "teams")
+        if type(teams) == "table" then
+            for teamKey, info in pairs(teams) do
+                local t = G.normalizeTeam(teamKey) or (type(info) == "table" and teamNameOf(info)) or nil
+                local roles = type(info) == "table" and rawget(info, "roles") or nil
+                if t and type(roles) == "table" then
+                    for k, v in pairs(roles) do
+                        local name = type(v) == "string" and v or (type(k) == "string" and k or nil)
+                        local entry = name and map[string.lower(name)]
+                        if entry and not entry.team then
+                            entry.team = t
+                        end
+                    end
+                end
             end
         end
     end
@@ -2048,7 +2105,7 @@ return function(ctx)
         local rolesCfg = G.require("shared.configurations.roles")
         parseRolesConfig(rolesCfg, map)
         local teamsCfg = G.require("shared.configurations.teamsConfig")
-        parseTeamsConfig(teamsCfg, map, 0)
+        parseTeamsConfig(teamsCfg, map)
         for _, n in ipairs(FALLBACK_ROLES) do
             addRole(map, n, nil)
         end
@@ -2091,7 +2148,7 @@ return function(ctx)
         end
         local key = string.lower(roleName)
         local e = G.roles(false)[ROLE_ALIASES[key] or key]
-        return e and e.team or FALLBACK_TEAMS[key] or FALLBACK_TEAMS[string.gsub(key, " ", "")]
+        return e and e.team or FALLBACK_TEAMS[key] or FALLBACK_TEAMS[(string.gsub(key, " ", ""))]
     end
 
     function G.gameConfig()
@@ -2187,14 +2244,21 @@ return function(ctx)
         K.WATCH_ATTRS[n] = true
     end
     K.ROLEISH = { "role", "team", "class", "faction", "align", "side", "job" }
+    -- pilihan / riwayat / kosmetik role bukan role ronde ini
     K.IGNORE_ATTR = { "discord", "booster", "setting", "hotkey", "owns", "innercircle", "xp", "level", "credit", "token", "session", "disguise", "label", "guess", "target", "vote", "killer", "cause", "last", "phase",
-        "point", "redacted", "display", "spectat" }
+        "point", "redacted", "display", "spectat", "select", "prefer", "prev", "request", "equip", "fav", "skin",
+        "owned", "unlock", "history", "pick" }
+    -- cuma nama persis ini yang dihitung "confirmed"; nama roleish lain -> "likely"
+    K.ROLE_ATTR_EXACT = {}
+    for _, n in ipairs({ "role", "currentrole", "myrole", "rolename", "assignedrole", "playerrole", "actualrole",
+        "realrole", "team", "currentteam", "teamname", "myteam", "faction", "alignment", "side" }) do
+        K.ROLE_ATTR_EXACT[n] = true
+    end
     K.DEATH_WORDS = { "died", "dead", "killed", "executed", "belonged", "unmasked", "eliminated", "murdered",
         "lynched", "hanged", "voted out", "perished", "slain", "body" }
     K.RESET_PHASES = { "lobby", "intermission", "waiting", "start", "roleselect", "reveal" }
     -- fase yang jelas masih di tengah ronde ("nightStart" bukan ronde baru)
     K.IN_ROUND = { "night", "day", "vot", "discuss", "meet" }
-    K.HYPOTHETICAL = { "if ", "when ", "while ", "unless ", "once " }
     -- Teks penyebab kematian (dari string SummitX) yang cuma masuk akal buat satu role. Tebakan -> "likely".
     K.CAUSE_HINTS = {
         { "wrong role", "Harbinger" },
@@ -2209,7 +2273,7 @@ return function(ctx)
     }
     K.HIDE_WORDS = { "locker", "closet", "hiding" }
     K.SKIP_WORDS = { "idle", "equip", "walk", "run", "hold", "crawl", "wound", "emote", "dance", "jump", "fall",
-        "climb", "point", "aim", "reload" }
+        "climb", "point", "aim", "reload", "inspect", "draw", "spin", "holster", "sheath", "twirl" }
     K.STAB_WORDS = { "knife", "stab", "swing", "slash" }
     K.SHOT_WORDS = { "glock", "gun", "shot", "shoot", "fire", "pistol", "revolver" }
     K.GUN_TOOLS = { "gun", "revolver", "pistol", "rifle", "shotgun" }
@@ -2218,9 +2282,20 @@ return function(ctx)
         "assignedRole" }
     K.TEAM_FIELDS = { "team", "Team", "currentTeam", "myTeam", "teamName", "alignment", "faction" }
     K.MATE_FIELDS = { "teammates", "teamMates", "partners", "allies", "members", "mafiaMembers", "knownRoles" }
-    K.SELF_PATTERNS = { "you are (.+)", "you're (.+)", "your role is (.+)", "your role: ?(.+)", "^role: ?(.+)" }
-    K.REVEAL_GUI_WORDS = { "role", "reveal", "intro", "identity", "card" }
+    K.CALL_SIGS = { "self", "none", "player" }
+    -- di-anchor ke awal teks / baris: "Bob: you're mafia lol" bukan layar role
+    K.SELF_PATTERNS = { "^you are%s*:?%s*(.+)", "^you're%s*:?%s*(.+)", "^your role is%s*:?%s*(.+)",
+        "^your role%s*:%s*(.+)", "^role%s*:%s*(.+)" }
+    -- label pembuka yang role-nya ada di label sebelah ("YOU ARE" + "MAFIA")
+    K.SELF_PREFIX = {}
+    for _, n in ipairs({ "you are", "you are the", "you are a", "you are an", "you're", "your role", "your role is",
+        "role" }) do
+        K.SELF_PREFIX[n] = true
+    end
+    K.REVEAL_GUI_WORDS = { "role", "reveal", "intro", "identity" }
+    K.CHAT_GUI_WORDS = { "chat", "feed", "message", "bubble", "history", "console" }
     K.VOTE_TARGET_KEYS = { "playervotes", "votedfor", "votetarget" }
+    K.CFG_DEFAULTS = { maxSilenceDistance = 20, maxSabotageDistance = 15, maxCleanupDistance = 15 }
 
     local function weak()
         return setmetatable({}, { __mode = "k" })
@@ -2247,7 +2322,9 @@ return function(ctx)
         pendingRevive = {},
         doorEvents = {},
         doors = weak(),      -- [Instance] = locked(bool)
+        doorConns = weak(),  -- [Instance] = connection (diputus waktu pintunya hilang)
         doorCount = 0,
+        killedAt = {},       -- [victim] = t (serangannya punya pelaku)
         corpseSeen = weak(),
         bananaSeen = weak(),
         toolSeen = weak(),
@@ -2265,15 +2342,24 @@ return function(ctx)
         charTimes = {},
         lastReset = -100,
         version = 0,
-        animNames = {},      -- [id] = nama (modul animasi / tool)
+        animNames = {},      -- [id] = nama animasi sendiri (modul animasi / tool)
+        animTool = {},       -- [id] = nama tool / grup tempat animasi itu ditemukan
         animModuleOk = false,
         idKind = {},         -- [id] = kind | false
         lockerTrack = {},
         posHist = {},        -- [Player] = { {t, pos}, ... }
         lastSample = -100,
-        t = { slow = -100, doors = -100, votes = -100, anim = -100, idKind = -100, phase = -100, wsDoors = -100 },
+        t = { slow = -100, doors = -100, votes = -100, idKind = -100, phase = -100, wsDoors = -100,
+            rcFunc = -100, cfg = -100 },
         warned = {},
         getTagsOk = nil,
+        req = {},            -- [path] = { miss, next, pending } backoff require modul game
+        rcFuncs = {},        -- [fname] = { sig, fails, dead, pending }
+        rcFuncRole = nil,
+        cfg = {},            -- angka gameConfig yang dibaca di thread sendiri
+        cfgPending = false,
+        gmiss = {},          -- [attrName] = { gap, next } globalAttr yang nggak ketemu
+        gui = { gap = 2, next = 0, pg = nil, conn = nil }, -- jadwal scan PlayerGui buat role sendiri
     }
 
     ------------------------------------------------------------------
@@ -2724,7 +2810,8 @@ return function(ctx)
         end
         local why = conf == "likely" and ("likely, " .. reason) or reason
         if p == LocalPlayer then
-            text = "You are " .. label .. " (" .. why .. ")"
+            -- sengaja bukan "You are X": toast kita bisa nyasar ke PlayerGui dan kebaca scan layar role
+            text = "Detected your role: " .. label .. " (" .. why .. ")"
         else
             text = nameOf(p) .. " is " .. label .. " (" .. why .. ")"
         end
@@ -2733,10 +2820,12 @@ return function(ctx)
         end
     end
 
-    -- Notif sekali per (player, role) per level (likely lalu confirmed).
+    -- Notif sekali per (player, role) per ronde, di level mana pun yang duluan (upgrade cuma masuk feed).
     local function maybeNotify(p, key, conf, label, reason, team)
-        local r = RANK[conf] or 0
-        if r < 2 then
+        if (RANK[conf] or 0) < 2 then
+            return
+        end
+        if conf ~= "confirmed" and not settings().showGuesses then
             return
         end
         local n = St.notified[p]
@@ -2744,16 +2833,18 @@ return function(ctx)
             n = {}
             St.notified[p] = n
         end
-        if (n[key] or 0) >= r then
+        if n[key] then
             return
         end
-        n[key] = r
+        n[key] = true
         notifyFound(p, label, reason, conf, team)
     end
 
+    local dropCandidate -- forward (setRole <-> kandidat)
+
     -- Urutan confidence: confirmed > likely > suspect. Confirmed cuma bisa diganti confirmed (dicatat di feed).
     local function setRole(p, role, conf, reason, force)
-        if not (p and role and RANK[conf]) then
+        if not (p and role and RANK[conf]) or St.removed[p] then
             return false
         end
         local rec = getRec(p)
@@ -2791,12 +2882,27 @@ return function(ctx)
             pushFeed(nameOf(p) .. ": " .. role .. " (" .. (conf == "likely" and "likely, " or "") .. reason .. ")")
             maybeNotify(p, role, conf, role, reason, team)
         end
+        if conf == "confirmed" then
+            -- sudah pasti role lain -> keluar dari set kandidat role lain (bisa nyisain kandidat terakhir)
+            local others
+            for r2, entry in pairs(St.cand) do
+                if r2 ~= role and entry.set[p] then
+                    others = others or {}
+                    others[#others + 1] = r2
+                end
+            end
+            if others then
+                for _, r2 in ipairs(others) do
+                    dropCandidate(r2, p)
+                end
+            end
+        end
         return true
     end
 
     -- Pengetahuan tim saja (contoh "EVIL TEAM") tanpa role.
     local function setTeam(p, team, conf, reason)
-        if not (p and team and RANK[conf]) then
+        if not (p and team and RANK[conf]) or St.removed[p] then
             return false
         end
         local rec = getRec(p)
@@ -2849,18 +2955,18 @@ return function(ctx)
         if rec.role == role and rec.roleConf ~= "confirmed" then
             rec.role, rec.roleConf, rec.reason = nil, nil, nil
         end
-        local entry = St.cand[role]
-        if entry and entry.set[p] then
-            entry.set[p] = nil
-            entry.n = entry.n - 1
-        end
         bump()
+        dropCandidate(role, p)
     end
 
     ------------------------------------------------------------------
     -- Kandidat berdasarkan jarak (Doctor / Witch / Saboteur / Janitor)
     ------------------------------------------------------------------
-    local function eligible(p, role)
+    -- ignoreStatus: buat deduksi yang nggak butuh dia masih bisa bergerak (kandidat terakhir, Harbinger mati)
+    local function eligible(p, role, ignoreStatus)
+        if not p or St.removed[p] then
+            return false -- sudah keluar dari server
+        end
         local rec = St.recs[p]
         if p == LocalPlayer and not (rec and rec.role == role) then
             return false -- diri sendiri cuma kalau memang role kita
@@ -2869,7 +2975,7 @@ return function(ctx)
             return true
         end
         local s = rec.status
-        if s.dead or s.downed or s.detained then
+        if not ignoreStatus and (s.dead or s.downed or s.detained) then
             return false
         end
         if rec.notRoles[role] then
@@ -2883,6 +2989,27 @@ return function(ctx)
             return false
         end
         return true
+    end
+
+    -- Keluarkan p dari set kandidat role; sisa satu -> dia "kandidat terakhir" (confirmed).
+    dropCandidate = function(role, p)
+        local entry = St.cand[role]
+        if not (entry and entry.set[p]) then
+            return
+        end
+        entry.set[p] = nil
+        local n, last = 0, nil
+        for q in pairs(entry.set) do
+            n = n + 1
+            last = q
+        end
+        entry.n = n
+        bump()
+        if n == 0 then
+            St.cand[role] = nil
+        elseif n == 1 and eligible(last, role, true) then
+            setRole(last, role, "confirmed", "last candidate left")
+        end
     end
 
     -- Jarak terdekat dalam ~1.5 detik terakhir (Doctor tp-heal-return cuma mampir sebentar).
@@ -2926,6 +3053,16 @@ return function(ctx)
 
     -- Irisan kandidat antar event; sisa 1 -> confirmed. Irisan kosong -> mulai lagi dari set terbaru.
     local function candidateEvent(role, set, n, reasonSingle, reasonMulti, label)
+        -- set bisa ditangkap beberapa ratus ms lalu: buang yang sudah keluar / nggak eligible lagi
+        local fresh = {}
+        n = 0
+        for p in pairs(set) do
+            if eligible(p, role) then
+                fresh[p] = true
+                n = n + 1
+            end
+        end
+        set = fresh
         if n <= 0 then
             return
         end
@@ -2974,11 +3111,73 @@ return function(ctx)
         return nil
     end
 
+    -- Animasi milik tool / grup ("Revolver" > "Inspect"): yang dinilai nama animasinya sendiri.
+    -- Nama tool cuma dipakai kalau nama animasinya generik ("Attack", "Use", "1").
+    local function classifyToolAnim(toolName, animName)
+        local kind = classifyAnim(animName)
+        if kind or type(toolName) ~= "string" or type(animName) ~= "string" then
+            return kind
+        end
+        local al = string.lower(animName)
+        if hasAny(al, K.SKIP_WORDS) then
+            return nil
+        end
+        local generic = string.match(al, "^%d+$") or string.find(al, "%f[%a]attack") or string.find(al, "%f[%a]strike")
+            or string.find(al, "%f[%a]use%f[%A]")
+        if not generic then
+            return nil
+        end
+        local tl = string.lower(toolName)
+        if hasAny(tl, K.STAB_WORDS) then
+            return "STAB"
+        end
+        if hasAny(tl, K.SHOT_WORDS) or hasAny(tl, K.GUN_TOOLS) then
+            return "SHOT"
+        end
+        return nil
+    end
+
+    -- v2.1: ID animasi serangan asli dari assets.animations.player1 (KnifeSwing / Glock).
+    local attackIds, attackIdsAt = nil, -100
+    local function attackKinds()
+        if attackIds and (next(attackIds) ~= nil or now() - attackIdsAt < 10) then
+            return attackIds
+        end
+        attackIds, attackIdsAt = {}, now()
+        local folder = Game.resolve("assets.animations.player1")
+        if folder then
+            for _, a in ipairs(folder:GetChildren()) do
+                if a:IsA("Animation") then
+                    local n = string.lower(a.Name)
+                    local aid = Game.normalizeId(a.AnimationId)
+                    if aid and n == "knifeswing" then
+                        attackIds[aid] = "STAB"
+                    elseif aid and n == "glock" then
+                        attackIds[aid] = "SHOT"
+                    end
+                end
+            end
+        end
+        return attackIds
+    end
+
     local function animKind(track)
         local anim = track.Animation
         local id = anim and Game.normalizeId(anim.AnimationId)
         if id == "0" then
             id = nil
+        end
+        local known = attackKinds()
+        if next(known) ~= nil then
+            -- Mode ketat: cuma ID asli yang dihitung serangan; sisanya cuma dicek buat "sembunyi".
+            if id and known[id] then
+                return known[id]
+            end
+            local nm = (id and Game.animationName(id)) or (anim and anim.Name) or track.Name
+            if classifyAnim(nm) == "HIDE" then
+                return "HIDE"
+            end
+            return nil
         end
         if id then
             local cached = St.idKind[id]
@@ -2988,7 +3187,12 @@ return function(ctx)
         end
         local kind
         if id then
-            kind = classifyAnim(St.animNames[id] or Game.animationName(id))
+            local nm = St.animNames[id]
+            if nm then
+                kind = classifyToolAnim(St.animTool[id], nm)
+            else
+                kind = classifyAnim(Game.animationName(id))
+            end
         end
         if not kind and anim and anim.Name ~= "Animation" then
             kind = classifyAnim(anim.Name)
@@ -3057,7 +3261,9 @@ return function(ctx)
                     walk(v, name, depth + 1)
                 end
                 if id and #id >= 5 and St.animNames[id] == nil then
-                    St.animNames[id] = name
+                    -- { Knife = { Inspect = id } }: nilai "Inspect", grup "Knife" cuma konteks
+                    St.animNames[id] = tostring(k)
+                    St.animTool[id] = prefix ~= "" and prefix or nil
                     added = added + 1
                 end
             end
@@ -3077,7 +3283,8 @@ return function(ctx)
             if d:IsA("Animation") then
                 local id = Game.normalizeId(d.AnimationId)
                 if id and id ~= "0" and St.animNames[id] == nil then
-                    St.animNames[id] = tool.Name .. "." .. d.Name
+                    St.animNames[id] = d.Name
+                    St.animTool[id] = tool.Name
                     St.idKind[id] = nil
                 end
             end
@@ -3127,17 +3334,44 @@ return function(ctx)
         end
     end
 
+    -- Senjata api yang lagi dipegang: "glock" (punya Mafia), "gun" (senjata lain), nil.
+    local function heldWeapon(p)
+        local char = p and p.Character
+        if not char then
+            return nil
+        end
+        local found
+        for _, c in ipairs(char:GetChildren()) do
+            if c:IsA("Tool") then
+                local l = string.lower(c.Name)
+                if string.find(l, "glock", 1, true) then
+                    return "glock"
+                end
+                if hasAny(l, K.GUN_TOOLS) then
+                    found = "gun"
+                end
+            end
+        end
+        return found
+    end
+
     ------------------------------------------------------------------
     -- Snapshot attribute / tag / ValueObject (sekali per refresh, bukan Game.flag per nama)
     ------------------------------------------------------------------
+    -- Nilai pertama menang, KECUALI yang lama falsy dan yang baru truthy (Player.Downed=false tapi
+    -- Character.Downed=true -> downed).
+    local function putSnap(snap, lk, v)
+        local old = snap.a[lk]
+        if old == nil or (not Game.truthy(old) and Game.truthy(v)) then
+            snap.a[lk] = v
+        end
+    end
+
     local function addAttrs(snap, inst, where)
         local ok, attrs = pcall(inst.GetAttributes, inst)
         if ok and type(attrs) == "table" then
             for k, v in pairs(attrs) do
-                local lk = string.lower(k)
-                if snap.a[lk] == nil then
-                    snap.a[lk] = v
-                end
+                putSnap(snap, string.lower(k), v)
                 snap.raw[#snap.raw + 1] = { name = k, value = v, where = where }
             end
         end
@@ -3146,11 +3380,8 @@ return function(ctx)
     local function addValues(snap, inst)
         for _, c in ipairs(inst:GetChildren()) do
             if c:IsA("ValueBase") then
-                local lk = string.lower(c.Name)
                 local v = c.Value
-                if snap.a[lk] == nil then
-                    snap.a[lk] = v
-                end
+                putSnap(snap, string.lower(c.Name), v)
                 snap.raw[#snap.raw + 1] = { name = c.Name, value = v, where = "value" }
             end
         end
@@ -3216,17 +3447,18 @@ return function(ctx)
         return false
     end
 
-    local function computeStatus(p, snap, char, hum, prev)
+    local function computeStatus(p, rec, snap, char, hum, prev)
         local s = {}
         local dead = anyFlag(snap, K.STATUS_KEYS.dead)
         if not dead then
             if hum then
                 dead = hum.Health <= 0
-            elseif not char then
-                dead = prev.dead -- tanpa karakter: pakai nilai lama
+            else
+                dead = prev.dead -- tanpa Humanoid nggak ada info darah: pakai nilai lama
             end
         end
-        s.dead = dead
+        -- sudah mati ronde ini: karakter baru (spectator / respawn) tetap dihitung mati sampai ronde baru
+        s.dead = dead or rec.diedRound == true
         s.downed = anyFlag(snap, K.STATUS_KEYS.downed)
         s.detained = anyFlag(snap, K.STATUS_KEYS.detained)
         s.silenced = anyFlag(snap, K.STATUS_KEYS.silenced)
@@ -3250,6 +3482,14 @@ return function(ctx)
         s.hiding = hiding
         s.poisoned = flag(snap, "poisonapplied") and not flag(snap, "poisoncured")
         s.ragdolled = anyFlag(snap, K.STATUS_KEYS.ragdolled)
+        if not char then
+            -- karakter hilang (badan dibuang): flag karakter nggak kebaca, jangan dianggap "bangun lagi"
+            for k, v in pairs(prev) do
+                if v == true then
+                    s[k] = true
+                end
+            end
+        end
         return s
     end
 
@@ -3264,12 +3504,14 @@ return function(ctx)
                     local ln = string.lower(it.name)
                     local roleish = hasAny(ln, K.ROLEISH)
                     if not hasAny(ln, K.IGNORE_ATTR) and (it.where ~= "value" or roleish) then
-                        local conf = roleish and "confirmed" or "likely"
+                        -- "Role" / "currentRole" -> confirmed; "SomethingRole" / nama lain -> likely
+                        local conf = K.ROLE_ATTR_EXACT[ln] and "confirmed" or "likely"
                         local src = (it.where == "value" and "value " or "attribute ") .. it.name
                         local role = exactRole(v)
                         if role then
                             setRole(p, role, conf, src)
-                        else
+                        elseif roleish then
+                            -- kata tim umum ("Good", "Innocent") cuma dipercaya di attribute yang memang soal tim/role
                             local team = exactTeam(v)
                             if team then
                                 setTeam(p, team, conf, src)
@@ -3299,20 +3541,33 @@ return function(ctx)
             end
         end
         if best then
+            St.killedAt[victim] = t
             local night = Game.isNight()
-            local role, reason = "Mafia", nil
-            if kind == "SHOT" and night == false then
-                role, reason = "Vigilante", "shot " .. nameOf(victim) .. " in daylight"
-            elseif kind == "SHOT" then
-                reason = "shot " .. nameOf(victim) .. (night and " at night" or "")
+            local vn = nameOf(victim)
+            pushFeed(nameOf(best) .. (downed and " downed " or " killed ") .. vn)
+            if kind ~= "SHOT" then
+                setRole(best, "Mafia", "confirmed", "stabbed " .. vn .. (night and " at night" or ""))
+            elseif night == true then
+                setRole(best, "Mafia", "confirmed", "shot " .. vn .. " at night")
+            elseif night == false then
+                setRole(best, "Vigilante", "confirmed", "shot " .. vn .. " in daylight")
             else
-                reason = "stabbed " .. nameOf(victim) .. (night and " at night" or "")
+                -- fase nggak kebaca: tembakan bisa Mafia (Glock) atau Vigilante, lihat senjatanya
+                local w = heldWeapon(best)
+                if w == "glock" then
+                    setRole(best, "Mafia", "likely", "shot " .. vn .. " with the Glock")
+                elseif w == "gun" then
+                    setRole(best, "Vigilante", "likely", "shot " .. vn .. " with a gun")
+                else
+                    addSuspect(best, "Mafia", "shot " .. vn)
+                    addSuspect(best, "Vigilante", "shot " .. vn)
+                end
             end
-            pushFeed(nameOf(best) .. (downed and " downed " or " killed ") .. nameOf(victim))
-            setRole(best, role, "confirmed", reason)
+            return true
         elseif downed then
             pushFeed(nameOf(victim) .. " went down")
         end
+        return false
     end
 
     local function onDowned(victim)
@@ -3324,31 +3579,39 @@ return function(ctx)
         attributeAttack(victim, true)
     end
 
-    local function onDied(p, rec)
+    -- Mati karena serangan orang (atau kehabisan darah setelah downed) -> bukan Harbinger yang salah tebak.
+    local function onDied(p, rec, wasDowned)
         if not rec.deadFed then
             rec.deadFed = true
             pushFeed(nameOf(p) .. " died")
         end
+        rec.diedRound = true
         local t = now()
-        St.recentDeaths[#St.recentDeaths + 1] = { p = p, t = t }
-        while #St.recentDeaths > 12 do
-            table.remove(St.recentDeaths, 1)
-        end
-        local w = St.harbWatch
-        if w and t - w.t <= 8 and p ~= w.exclude then
-            St.harbWatch = nil
-            setRole(p, "Harbinger", "confirmed", "died calling out the wrong role")
-        end
         local last = St.attributed[p]
         if not last or t - last >= 5 then
             St.attributed[p] = t
             attributeAttack(p, false)
         end
+        local killed = wasDowned == true or (St.killedAt[p] ~= nil and t - St.killedAt[p] <= 20)
+        St.recentDeaths[#St.recentDeaths + 1] = { p = p, t = t, killed = killed }
+        while #St.recentDeaths > 12 do
+            table.remove(St.recentDeaths, 1)
+        end
+        local w = St.harbWatch
+        if w and t - w.t <= 8 and p ~= w.exclude and not killed and eligible(p, "Harbinger", true) then
+            St.harbWatch = nil
+            setRole(p, "Harbinger", "confirmed", "died calling out the wrong role")
+        end
+    end
+
+    -- Radius dari gameConfig, dibaca di thread scan (require bisa yield); event cuma baca cache.
+    local function cfgNum(name)
+        return St.cfg[name] or K.CFG_DEFAULTS[name]
     end
 
     local function onSilenced(p)
         pushFeed(nameOf(p) .. " was silenced")
-        local set, n = playersNear(posOf(p), Game.configNumber("maxSilenceDistance", 20), "Witch", p)
+        local set, n = playersNear(posOf(p), cfgNum("maxSilenceDistance"), "Witch", p)
         candidateEvent("Witch", set, n, "only one in reach when " .. nameOf(p) .. " was silenced",
             "in reach of every silence", "near a silence")
     end
@@ -3361,7 +3624,7 @@ return function(ctx)
 
     local function transitions(p, rec, prev, cur, cured, wound)
         if cur.dead and not prev.dead then
-            onDied(p, rec)
+            onDied(p, rec, prev.downed)
         end
         if not cur.dead then
             if (cur.downed and not prev.downed) or (wound and not rec.wound) then
@@ -3395,7 +3658,7 @@ return function(ctx)
         local snap, char, hum = snapshot(p)
         rec.snap = snap
         local prev = rec.status
-        local cur = computeStatus(p, snap, char, hum, prev)
+        local cur = computeStatus(p, rec, snap, char, hum, prev)
         local dn = snap.a["disguisename"]
         local disg = nil
         if type(dn) == "string" and dn ~= "" and dn ~= p.Name and dn ~= p.DisplayName then
@@ -3490,17 +3753,27 @@ return function(ctx)
         local e = { t = now() }
         if locked then
             e.role = "Saboteur"
-            e.set, e.n = playersNear(pos, Game.configNumber("maxSabotageDistance", 15), "Saboteur", nil)
+            e.set, e.n = playersNear(pos, cfgNum("maxSabotageDistance"), "Saboteur", nil)
             e.single, e.multi, e.label = "only one who could have locked that door", "in reach of every lock and banana",
                 "near a locked door"
             pushFeed("A door was locked")
         else
             e.role = "Janitor"
-            e.set, e.n = playersNear(pos, Game.configNumber("maxCleanupDistance", 15), "Janitor", nil)
+            e.set, e.n = playersNear(pos, cfgNum("maxCleanupDistance"), "Janitor", nil)
             e.single, e.multi, e.label = "only one who could have unlocked that door",
                 "in reach of every unlock and cleanup", "near an unlocked door"
         end
         St.doorEvents[#St.doorEvents + 1] = e
+    end
+
+    -- Koneksi pintu disimpan per pintu (bukan di St.conns) supaya bisa diputus waktu map diganti.
+    local function unhookDoor(d)
+        local c = St.doorConns[d]
+        if c then
+            pcall(c.Disconnect, c)
+        end
+        St.doorConns[d] = nil
+        St.doors[d] = nil
     end
 
     local function hookDoor(inst)
@@ -3508,7 +3781,7 @@ return function(ctx)
         St.doorCount = St.doorCount + 1
         local ok, sig = pcall(inst.GetAttributeChangedSignal, inst, "Locked")
         if ok and sig then
-            addConn(St.conns, sig, function()
+            St.doorConns[inst] = addConn({}, sig, function()
                 onDoorChanged(inst)
             end)
         end
@@ -3516,12 +3789,16 @@ return function(ctx)
 
     local function scanDoors()
         local count = 0
+        local gone = {}
         for d in pairs(St.doors) do
             if d.Parent then
                 count = count + 1
             else
-                St.doors[d] = nil
+                gone[#gone + 1] = d
             end
+        end
+        for _, d in ipairs(gone) do
+            unhookDoor(d)
         end
         St.doorCount = count
         local map = Workspace:FindFirstChild("Map")
@@ -3551,8 +3828,8 @@ return function(ctx)
         if St.bananaSeen[inst] then
             return
         end
-        St.bananaSeen[inst] = true
-        -- masih dipegang (di dalam karakter) -> itu urusan rule tool
+        -- masih dipegang (di dalam karakter / backpack) -> itu urusan rule tool. Jangan ditandai "seen":
+        -- instance yang sama nanti di-drop ke workspace dan harus tetap kehitung.
         local model = inst:FindFirstAncestorOfClass("Model")
         while model do
             if Players:GetPlayerFromCharacter(model) then
@@ -3560,6 +3837,10 @@ return function(ctx)
             end
             model = model:FindFirstAncestorOfClass("Model")
         end
+        if inst:FindFirstAncestorOfClass("Backpack") then
+            return
+        end
+        St.bananaSeen[inst] = true
         local pos = instPos(inst)
         if not pos then
             return
@@ -3621,10 +3902,11 @@ return function(ctx)
             markNotRole(h.p, h.role)
         end
         -- Harbinger mati karena salah tebak: yang barusan mati, atau yang mati dalam 8 detik.
+        -- Yang dibunuh orang / sudah pasti role lain dilewati (watch tetap terbuka).
         local t = now()
         for i = #St.recentDeaths, 1, -1 do
             local d = St.recentDeaths[i]
-            if t - d.t <= 3 and d.p ~= h.p then
+            if t - d.t <= 3 and d.p ~= h.p and not d.killed and eligible(d.p, "Harbinger", true) then
                 setRole(d.p, "Harbinger", "confirmed", "died calling out the wrong role")
                 return
             end
@@ -3662,12 +3944,16 @@ return function(ctx)
         local deathy = hasAny(low, K.DEATH_WORDS)
         local hint = causeHint(low)
         if hint then
-            setRole(p, hint, "likely", "death cause")
+            if settings().showGuesses then
+                setRole(p, hint, "likely", "death cause")
+            end
             return
         end
         if string.find(low, "mafia's side", 1, true) or string.find(low, "side of the mafia", 1, true)
             or string.find(low, "not of the mafia", 1, true) then
-            setTeam(p, "EVIL", deathy and "confirmed" or "likely", deathy and "revealed on death" or "announcement")
+            if deathy then
+                setTeam(p, "EVIL", "confirmed", "revealed on death")
+            end
             return
         end
         local roles = rolesIn(low)
@@ -3680,8 +3966,8 @@ return function(ctx)
             elseif string.find(low, "town team", 1, true) then
                 team = "TOWN"
             end
-            if team then
-                setTeam(p, team, deathy and "confirmed" or "likely", deathy and "revealed on death" or "announcement")
+            if team and deathy then
+                setTeam(p, team, "confirmed", "revealed on death")
             end
             return
         end
@@ -3706,7 +3992,7 @@ return function(ctx)
             or string.find(between, "role", 1, true)
         if linked and deathy then
             setRole(p, r.name, "confirmed", "revealed on death")
-        else
+        elseif settings().showGuesses then
             setRole(p, r.name, "likely", "announcement")
         end
     end
@@ -3715,6 +4001,15 @@ return function(ctx)
         local text = trim(stripRich(raw))
         if text == "" then
             return
+        end
+        -- v2.1: chat pemain di game ini lewat jalur sistem ("Fallon: ..."). Itu bukan pengumuman.
+        if isSystem then
+            local speaker = string.match(text, "^([^:]+):%s")
+            if speaker and #speaker <= 40 and playerByName(speaker) then
+                isSystem = false
+            elseif type(raw) == "string" and string.find(raw, "^%s*<font[^>]*><b>[^<]+:</b>") then
+                isSystem = false
+            end
         end
         local key = (isSystem and "S:" or "U:") .. text
         local seen = St.recentMsgs[key]
@@ -3748,58 +4043,79 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Scan berkala (tiap 2 detik)
     ------------------------------------------------------------------
-    local function tagTextRole(text)
+    -- Label tim di tag: cuma yang jelas label tim ("EVIL TEAM", "THE VEIL", "EVIL"), bukan kata umum
+    -- kayak "Innocent" / "Town" yang bisa saja nama / status.
+    local function tagTeam(text)
+        local t = cleanWord(text)
+        if t == "evil" or t == "veil" then
+            return string.upper(t)
+        end
+        if string.match(t, "^[%a ]+ team$") and #t <= 24 then
+            return Game.normalizeTeam(t)
+        end
+        return nil
+    end
+
+    -- names: [cleanWord(nama)] = true; baris yang cuma nama player (nametag "Witch") bukan tag role.
+    local function tagTextRole(text, names)
         local raw = stripRich(text)
         for line in string.gmatch(raw, "[^\n]+") do
-            local role = exactRole(line)
-            if not role then
+            if not names[cleanWord(line)] then
+                local role = exactRole(line)
+                local team = nil
                 for inner in string.gmatch(line, "%[([^%]]+)%]") do
-                    role = role or exactRole(inner)
+                    if not names[cleanWord(inner)] then
+                        role = role or exactRole(inner)
+                        team = team or tagTeam(inner)
+                    end
                 end
-            end
-            if role then
-                return role, nil
-            end
-            local team = exactTeam(line)
-            if not team then
-                for inner in string.gmatch(line, "%[([^%]]+)%]") do
-                    team = team or exactTeam(inner)
+                if role then
+                    return role, nil
                 end
-            end
-            if team then
-                return nil, team
+                team = tagTeam(line) or team
+                if team then
+                    return nil, team
+                end
             end
         end
         return nil, nil
     end
 
-    -- Tag Billboard/SurfaceGui di karakter. Tag tersembunyi cuma "likely" dan dibuang kalau
-    -- role-nya sama di banyak karakter (kemungkinan template).
+    -- Tag Billboard/SurfaceGui di karakter. Tag visible -> confirmed, tersembunyi -> likely. Dua-duanya
+    -- dibuang kalau tag yang sama nempel di banyak karakter (template / label umum).
     local function scanCharTags()
-        local hidden, hiddenCount = {}, {}
+        local found, count, seen = {}, {}, {}
         local list = Players:GetPlayers()
         for _, p in ipairs(list) do
             local char = p.Character
             if char then
+                -- nama dia sendiri (username / display / disguise): nametag, bukan tag role
+                local names = {}
+                for _, n in ipairs(namesOf(p)) do
+                    if type(n) == "string" and n ~= "" then
+                        names[cleanWord(n)] = true
+                    end
+                end
                 for _, d in ipairs(char:GetDescendants()) do
                     if isText(d) then
                         local g = d.Parent
                         while g and g ~= char and not (g:IsA("BillboardGui") or g:IsA("SurfaceGui")) do
                             g = g.Parent
                         end
-                        if g and g ~= char then
-                            local role, team = tagTextRole(d.Text)
+                        if g and g ~= char and not isOwnGui(d) then
+                            local role, team = tagTextRole(d.Text, names)
                             if role or team then
-                                if guiVisible(d) then
-                                    if role then
-                                        setRole(p, role, "confirmed", "visible tag")
-                                    else
-                                        setTeam(p, team, "confirmed", "visible tag")
-                                    end
-                                else
-                                    local key = role or ("team:" .. team)
-                                    hidden[#hidden + 1] = { p = p, role = role, team = team, key = key }
-                                    hiddenCount[key] = (hiddenCount[key] or 0) + 1
+                                local vis = guiVisible(d)
+                                local key = (vis and "v:" or "h:") .. (role or ("team:" .. team))
+                                local mine = seen[p]
+                                if not mine then
+                                    mine = {}
+                                    seen[p] = mine
+                                end
+                                if not mine[key] then
+                                    mine[key] = true
+                                    count[key] = (count[key] or 0) + 1
+                                    found[#found + 1] = { p = p, role = role, team = team, key = key, vis = vis }
                                 end
                             end
                         end
@@ -3807,9 +4123,16 @@ return function(ctx)
                 end
             end
         end
-        local limit = math.max(2, math.floor(#list * 0.4))
-        for _, h in ipairs(hidden) do
-            if hiddenCount[h.key] <= limit then
+        local hiddenLimit = math.max(2, math.floor(#list * 0.4))
+        local visLimit = math.max(3, math.floor(#list * 0.4))
+        for _, h in ipairs(found) do
+            if h.vis and count[h.key] <= visLimit then
+                if h.role then
+                    setRole(h.p, h.role, "confirmed", "visible tag")
+                else
+                    setTeam(h.p, h.team, "confirmed", "visible tag")
+                end
+            elseif not h.vis and count[h.key] <= hiddenLimit then
                 if h.role then
                     setRole(h.p, h.role, "likely", "hidden tag")
                 else
@@ -3917,39 +4240,88 @@ return function(ctx)
         return nil
     end
 
-    local function readController(rc)
-        local role
+    -- Game.require dengan backoff (2, 4, 8 ... 60 s) kalau modulnya nggak ada, dan nggak dipanggil ulang
+    -- selama panggilan sebelumnya masih nyangkut (require bisa yield).
+    local function reqModule(path)
+        local r = St.req[path]
+        if not r then
+            r = { miss = 0, next = -1, pending = false }
+            St.req[path] = r
+        end
+        if r.pending or now() < r.next then
+            return nil
+        end
+        r.pending = true
+        local ok, v = pcall(Game.require, path)
+        r.pending = false
+        if ok and type(v) == "table" then
+            r.miss = 0
+            return v
+        end
+        r.miss = r.miss + 1
+        r.next = now() + math.min(60, 2 ^ r.miss)
+        return nil
+    end
+
+    -- Fungsi role di controller (bisa saja lewat remote): signature yang berhasil diingat, maksimal satu
+    -- panggilan per 5 s (10 s selama masih nyari signature), dan nggak dipanggil lagi kalau masih nyangkut.
+    local function callRoleFuncs(rc)
         for _, fname in ipairs(K.ROLE_FUNCS) do
             local f = index(rc, fname)
-            if type(f) == "function" then
-                local ok, v = pcall(f)
-                if ok then
-                    role = roleFromValue(v)
-                end
-                if not role then
-                    ok, v = pcall(f, rc)
+            local st = St.rcFuncs[fname]
+            if not st then
+                st = { fails = 0 }
+                St.rcFuncs[fname] = st
+            end
+            if type(f) == "function" and not st.pending and not st.dead then
+                local anyOk = false
+                st.pending = true
+                for _, sig in ipairs(st.sig and { st.sig } or K.CALL_SIGS) do
+                    local ok, v
+                    if sig == "self" then
+                        ok, v = pcall(f, rc)
+                    elseif sig == "player" then
+                        ok, v = pcall(f, LocalPlayer)
+                    else
+                        ok, v = pcall(f)
+                    end
                     if ok then
-                        role = roleFromValue(v)
+                        anyOk = true
+                        local role = roleFromValue(v)
+                        if role then
+                            st.sig, st.pending, st.fails = sig, false, 0
+                            return role
+                        end
                     end
                 end
-                if not role then
-                    ok, v = pcall(f, LocalPlayer)
-                    if ok then
-                        role = roleFromValue(v)
-                    end
-                end
-                if role then
-                    break
+                st.pending = false
+                if anyOk then
+                    st.fails = 0
+                else
+                    st.fails = st.fails + 1
+                    st.dead = st.fails >= 3
                 end
             end
         end
-        if not role then
-            for _, k in ipairs(K.ROLE_FIELDS) do
-                role = roleFromValue(index(rc, k))
-                if role then
-                    break
-                end
+        return nil
+    end
+
+    local function readController(rc)
+        local role
+        -- field dulu (murah, tanpa efek samping); fungsi cuma kalau field nggak ngasih role
+        for _, k in ipairs(K.ROLE_FIELDS) do
+            role = roleFromValue(index(rc, k))
+            if role then
+                break
             end
+        end
+        if not role then
+            local t = now()
+            if t - St.t.rcFunc >= (St.rcFuncRole and 5 or 10) then
+                St.t.rcFunc = t
+                St.rcFuncRole = callRoleFuncs(rc)
+            end
+            role = St.rcFuncRole
         end
         local team
         for _, k in ipairs(K.TEAM_FIELDS) do
@@ -4058,73 +4430,40 @@ return function(ctx)
         end
     end
 
+    -- Teks yang DIAWALI "You are ..." / "Your role: ..." (seluruh teks atau per baris).
+    -- "Bob: you're mafia lol" dan "If you are the Doctor, ..." nggak cocok karena polanya di-anchor.
     local function selfFromText(text)
         local low = string.lower(stripRich(text))
-        for _, pat in ipairs(K.SELF_PATTERNS) do
-            local s, _, rest = string.find(low, pat)
-            -- "If you are the Doctor, ..." (teks tutorial) bukan role kita
-            if rest and hasAny(string.sub(low, math.max(1, s - 8), s - 1), K.HYPOTHETICAL) then
-                rest = nil
+        local cands = { (string.gsub(low, "%s+", " ")) }
+        if string.find(low, "\n", 1, true) then
+            for line in string.gmatch(low, "[^\n]+") do
+                cands[#cands + 1] = line
             end
-            if rest then
-                rest = string.match(rest, "^[^%.,!;\n]+") or rest
-                if not string.find(rest, "^%s*not") then
-                    local words = {}
-                    for w in string.gmatch(rest, "%S+") do
-                        words[#words + 1] = w
-                        if #words >= 4 then
-                            break
-                        end
-                    end
-                    for n = #words, 1, -1 do
-                        local r = exactRole(table.concat(words, " ", 1, n))
-                        if r then
-                            return r, nil
-                        end
-                    end
-                    local onTeam = string.match(rest, "^on (.+)$") or string.match(rest, "^in (.+)$")
-                    local team = onTeam and exactTeam(onTeam) or nil
-                    if team then
-                        return nil, team
-                    end
-                end
-            end
-        end
-        return nil, nil
-    end
-
-    local function inRevealGui(label)
-        local node = label
-        while node do
-            if hasAny(string.lower(node.Name), K.REVEAL_GUI_WORDS) then
-                return true
-            end
-            if node:IsA("ScreenGui") then
-                return false
-            end
-            node = node.Parent
-        end
-        return false
-    end
-
-    local function scanSelfGui()
-        local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-        if not pg then
-            return nil, nil
         end
         local team
-        for _, d in ipairs(pg:GetDescendants()) do
-            if d:IsA("TextLabel") then
-                local text = d.Text
-                if type(text) == "string" and text ~= "" and #text < 200 and guiVisible(d) and not isOwnGui(d) then
-                    local r, t = selfFromText(text)
-                    if r then
-                        return r, nil
-                    end
-                    team = team or t
-                    local whole = exactRole(text)
-                    if whole and inRevealGui(d) then
-                        return whole, nil
+        for _, c in ipairs(cands) do
+            local s = string.gsub(c, "^[%s%p]+", "")
+            for _, pat in ipairs(K.SELF_PATTERNS) do
+                local rest = string.match(s, pat)
+                if rest then
+                    rest = string.match(rest, "^[^%.,!;]+") or rest
+                    rest = string.gsub(rest, "^now%s+", "")
+                    if not string.find(rest, "^%s*not") then
+                        local words = {}
+                        for w in string.gmatch(rest, "%S+") do
+                            words[#words + 1] = w
+                            if #words >= 4 then
+                                break
+                            end
+                        end
+                        for n = #words, 1, -1 do
+                            local r = exactRole(table.concat(words, " ", 1, n))
+                            if r then
+                                return r, nil
+                            end
+                        end
+                        local onTeam = string.match(rest, "^on (.+)$") or string.match(rest, "^in (.+)$")
+                        team = team or (onTeam and exactTeam(onTeam)) or nil
                     end
                 end
             end
@@ -4132,18 +4471,159 @@ return function(ctx)
         return nil, team
     end
 
+    -- ScreenGui tempat label ini. nil kalau di Billboard/SurfaceGui (nempel ke player lain), di dalam
+    -- chat / feed, atau di luar ScreenGui. Nggak pernah naik lewat ScreenGui / PlayerGui.
+    local function selfGuiRoot(label)
+        local node = label.Parent
+        while node do
+            if hasAny(string.lower(node.Name), K.CHAT_GUI_WORDS) then
+                return nil
+            end
+            if node:IsA("ScreenGui") then
+                return node
+            end
+            if isCollector(node) or node:IsA("PlayerGui") or node:IsA("Player") then
+                return nil
+            end
+            node = node.Parent
+        end
+        return nil
+    end
+
+    -- Ada nama player lain yang kelihatan di GUI ini (scoreboard, kartu vote, daftar tim)?
+    local function otherPlayerIn(sg)
+        local names = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then
+                for _, n in ipairs(namesOf(p)) do
+                    if type(n) == "string" and #n >= 3 and not exactRole(n) then
+                        names[#names + 1] = string.lower(n)
+                    end
+                end
+            end
+        end
+        for _, d in ipairs(sg:GetDescendants()) do
+            if isText(d) then
+                local t = d.Text
+                if type(t) == "string" and t ~= "" and #t < 200 and guiVisible(d) then
+                    local low = string.lower(stripRich(t))
+                    for _, n in ipairs(names) do
+                        if findWord(low, n) then
+                            return true
+                        end
+                    end
+                end
+            end
+        end
+        return false
+    end
+
+    -- Layar role sendiri di PlayerGui. "You are X" (di awal teks) menang. Label yang isinya cuma nama role
+    -- diterima kalau di ScreenGui itu cuma ada satu role DAN (ada label "YOU ARE", atau ScreenGui-nya
+    -- bernama role/reveal/intro/identity tanpa nama player lain di situ).
+    local function scanSelfGui(pg)
+        local team
+        local bare, order = {}, {}
+        for _, d in ipairs(pg:GetDescendants()) do
+            if d:IsA("TextLabel") then
+                local text = d.Text
+                if type(text) == "string" and text ~= "" and #text < 200 then
+                    -- saring murah dulu, baru cek visible / ancestor
+                    local low = string.lower(text)
+                    local maybe = string.find(low, "you", 1, true) or string.find(low, "role", 1, true)
+                    local whole = (not maybe) and #text <= 80 and exactRole(text) or nil
+                    -- layar role biasanya di-fade (TextTransparency 1) tapi Visible tetap true
+                    local tt = (maybe or whole) and d.TextTransparency
+                    local faded = type(tt) == "number" and tt >= 0.99
+                    if (maybe or whole) and not faded and guiVisible(d) and not isOwnGui(d) then
+                        local sg = selfGuiRoot(d)
+                        if sg then
+                            local b = bare[sg]
+                            if not b then
+                                b = { roles = {}, n = 0 }
+                                bare[sg] = b
+                                order[#order + 1] = sg
+                            end
+                            if maybe then
+                                local r, t = selfFromText(text)
+                                if r then
+                                    return r, nil
+                                end
+                                team = team or t
+                                if K.SELF_PREFIX[cleanWord(text)] then
+                                    b.prefix = true
+                                end
+                            elseif not b.roles[whole] then
+                                b.roles[whole] = true
+                                b.n = b.n + 1
+                                b.role = whole
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        for _, sg in ipairs(order) do
+            local b = bare[sg]
+            -- label "YOU ARE" sudah cukup kuat (layar Mafia boleh nyebut nama partner); kalau cuma dari nama
+            -- ScreenGui, tolak yang ada nama player lain (scoreboard / kartu vote)
+            if b.n == 1 and (b.prefix or (hasAny(string.lower(sg.Name), K.REVEAL_GUI_WORDS) and not otherPlayerIn(sg))) then
+                return b.role, nil
+            end
+        end
+        return nil, team
+    end
+
     local clearRound -- forward
+
+    -- Jadwal scan PlayerGui: 2 s, mundur sampai 8 s kalau nggak ada yang baru; balik ke 2 s kalau ada GUI
+    -- baru masuk, ronde baru, atau fase berubah.
+    local function guiKick()
+        St.gui.gap, St.gui.next = 2, 0
+    end
+
+    -- Role sendiri dari layar. Dicek ulang terus selama role-nya bukan dari controller, jadi layar yang
+    -- salah baca bisa dikoreksi layar berikutnya. Return role yang ditemukan (atau nil).
+    local function selfGui()
+        local g = St.gui
+        local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if not pg then
+            return nil
+        end
+        if g.pg ~= pg then
+            if g.conn then
+                pcall(g.conn.Disconnect, g.conn)
+            end
+            g.pg = pg
+            g.conn = addConn(St.conns, pg.DescendantAdded, guiKick)
+            guiKick()
+        end
+        local t = now()
+        if t < g.next then
+            return nil
+        end
+        local r, tm = scanSelfGui(pg)
+        local changed = false
+        if r then
+            changed = setRole(LocalPlayer, r, "confirmed", "role screen")
+        elseif tm then
+            changed = setTeam(LocalPlayer, tm, "confirmed", "role screen")
+        end
+        g.gap = changed and 2 or math.min(g.gap * 2, 8)
+        g.next = t + g.gap
+        return r
+    end
 
     local function detectSelf()
         local rec = getRec(LocalPlayer)
         local ctrlRole, ctrlTeam
-        local rc = Game.require("client.controllers.roleController")
-        if type(rc) == "table" then
+        local rc = reqModule("client.controllers.roleController")
+        if rc then
             ctrlRole, ctrlTeam = readController(rc)
             local started = unwrap(index(rc, "gameStarted"))
             if type(started) == "boolean" then
                 if started and St.gameStarted == false and now() - St.lastReset > 15 then
-                    clearRound("new round")
+                    clearRound("new round", true) -- game baru mulai: role lama nggak berlaku lagi
                 end
                 St.gameStarted = started
             end
@@ -4151,16 +4631,17 @@ return function(ctx)
         if ctrlRole then
             if St.ctrlRole and St.ctrlRole ~= ctrlRole and now() - St.lastReset > 15 then
                 St.ctrlRole = ctrlRole
-                clearRound("new round") -- role baru dari game = ronde baru
+                clearRound("new round", true) -- role baru dari game = ronde baru
             end
             St.ctrlRole = ctrlRole
             St.selfLocked = true
             setRole(LocalPlayer, ctrlRole, "confirmed", "your role", true)
         else
-            St.selfLocked = false
+            -- role dari jaringan (kalau modul Net nyetel St.netRole) tetap mengunci
+            St.selfLocked = St.netRole ~= nil
         end
         local selfTeam = ctrlTeam
-        if type(rc) == "table" then
+        if rc then
             selfTeam = readTeamMembers(rc) or selfTeam
         end
         if selfTeam then
@@ -4168,24 +4649,27 @@ return function(ctx)
         end
         local myRole = rec.role
         local myTeam = (myRole and Game.teamOf(myRole)) or rec.team
-        if type(rc) == "table" then
+        if rc then
             readMates(rc, myTeam)
         end
         if myTeam == "EVIL" then
-            readMates(Game.require("client.controllers.roleController.roles.mafia"), "EVIL")
+            readMates(reqModule("client.controllers.roleController.roles.mafia"), "EVIL")
         end
-        if ctrlRole or (rec.role and rec.roleConf == "confirmed") then
+        if ctrlRole or St.selfLocked then
             return
         end
-        local r, t = scanSelfGui()
-        if r then
-            setRole(LocalPlayer, r, "confirmed", "role screen")
-            return
+        if not selfGui() then
+            scanTools(LocalPlayer)
         end
-        if t then
-            setTeam(LocalPlayer, t, "confirmed", "role screen")
+    end
+
+    -- Angka gameConfig + tabel role dibaca di sini (require bisa yield), bukan di event / step.
+    local function refreshConfig()
+        pcall(Game.roles, false)
+        for name, def in pairs(K.CFG_DEFAULTS) do
+            local ok, v = pcall(Game.configNumber, name, def)
+            St.cfg[name] = (ok and type(v) == "number") and v or def
         end
-        scanTools(LocalPlayer)
     end
 
     -- require modul game bisa yield, jadi jalanin di thread sendiri.
@@ -4195,6 +4679,16 @@ return function(ctx)
         end
         St.selfBusy, St.selfBusyAt = true, now()
         task.spawn(function()
+            local t = now()
+            if not St.cfgPending and t - St.t.cfg >= 30 then
+                St.t.cfg = t
+                St.cfgPending = true
+                try("config", refreshConfig)
+                if not St.animModuleOk then
+                    try("animModule", loadAnimNames)
+                end
+                St.cfgPending = false
+            end
             try("self", detectSelf)
             St.selfBusy = false
         end)
@@ -4234,6 +4728,24 @@ return function(ctx)
             n = n + (type(v) == "number" and v or 1)
         end
         return n
+    end
+
+    -- Game.globalAttr nyari rekursif di ReplicatedStorage tiap kali attribute-nya nggak ada (miss nggak
+    -- di-cache). Di sini miss di-cache dengan jeda 1, 2, 4, 8 s.
+    local function globalCached(name)
+        local m = St.gmiss[name]
+        local t = now()
+        if m and t < m.next then
+            return nil
+        end
+        local ok, v = pcall(Game.globalAttr, name)
+        if ok and v ~= nil then
+            St.gmiss[name] = nil
+            return v
+        end
+        local gap = m and math.min(m.gap * 2, 8) or 1
+        St.gmiss[name] = { gap = gap, next = t + gap }
+        return nil
     end
 
     local function resolveVoteTarget(v)
@@ -4282,7 +4794,7 @@ return function(ctx)
                 end
             end
         end
-        local gt = Game.globalAttr("talliedVotes")
+        local gt = globalCached("talliedVotes")
         local gtab = type(gt) == "table" and gt or decodeJSON(gt)
         if type(gtab) == "table" then
             for k, v in pairs(gtab) do
@@ -4294,7 +4806,7 @@ return function(ctx)
                 end
             end
         end
-        local gp = Game.globalAttr("playerVotes")
+        local gp = globalCached("playerVotes")
         local gptab = type(gp) == "table" and gp or decodeJSON(gp)
         if type(gptab) == "table" then
             for k, v in pairs(gptab) do
@@ -4468,12 +4980,16 @@ return function(ctx)
         St.charTimes[p] = nil
         St.notified[p] = nil
         St.attributed[p] = nil
+        St.killedAt[p] = nil
         St.posHist[p] = nil
-        for _, e in pairs(St.cand) do
+        local roles = {}
+        for role, e in pairs(St.cand) do
             if e.set[p] then
-                e.set[p] = nil
-                e.n = e.n - 1
+                roles[#roles + 1] = role
             end
+        end
+        for _, role in ipairs(roles) do
+            dropCandidate(role, p) -- sisa satu -> kandidat terakhir
         end
         bump()
     end
@@ -4515,7 +5031,14 @@ return function(ctx)
         if done and done:IsA("RemoteEvent") then
             addConn(St.conns, done.OnClientEvent, function(data, channel)
                 if type(data) == "table" then
-                    onChatMessage(data.Message, false, data.SpeakerUserId, data.OriginalChannel or channel)
+                    -- pengumuman game lewat chat lama: speaker bukan player (UserId 0 / nil) atau tipe System
+                    local uid = data.SpeakerUserId
+                    local speaker = resolvePlayer(uid)
+                    if not speaker and type(data.FromSpeaker) == "string" then
+                        speaker = playerByName(data.FromSpeaker)
+                    end
+                    local isSystem = speaker == nil and (data.MessageType == "System" or uid == nil or uid == 0)
+                    onChatMessage(data.Message, isSystem, uid, data.OriginalChannel or channel)
                 end
             end)
         end
@@ -4547,31 +5070,68 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Ronde
     ------------------------------------------------------------------
-    clearRound = function(reason)
+    -- dropSelf: buang juga role sendiri (game benar-benar mulai baru). Selain itu role sendiri dibawa ke
+    -- ronde berikut sebagai "likely": layar role sudah hilang dan nggak bisa dibaca ulang, tapi bukti baru
+    -- (layar role baru, controller, tool) tetap bisa menggantinya.
+    clearRound = function(reason, dropSelf)
+        local me = St.recs[LocalPlayer]
+        local keep
+        if me and not dropSelf then
+            keep = { role = me.role, roleConf = me.roleConf, reason = me.reason, team = me.team,
+                teamConf = me.teamConf, teamReason = me.teamReason }
+            -- dari tool (pisau / Glock / pisang): dicek ulang habis reset, jangan dibawa kalau tool-nya sudah hilang
+            local r = type(me.reason) == "string" and me.reason or ""
+            if string.find(r, "^carries ") or string.find(r, "^holding ") then
+                keep.role = nil
+            end
+        end
         for _, rec in pairs(St.recs) do
             rec.role, rec.roleConf, rec.reason = nil, nil, nil
             rec.team, rec.teamConf, rec.teamReason = nil, nil, nil
             rec.suspects, rec.notRoles, rec.seenAttr = {}, {}, {}
             rec.deadFed = false
+            rec.diedRound = nil
         end
-        St.cand, St.lastAttack, St.attributed = {}, {}, {}
+        St.cand, St.lastAttack, St.attributed, St.killedAt = {}, {}, {}, {}
         St.harb, St.harbWatch = nil, nil
         St.recentDeaths, St.pendingRevive, St.doorEvents = {}, {}, {}
         St.votes, St.voteTargets = {}, {}
         St.notified, St.selfNotified = {}, false
         St.corpseSeen, St.toolSeen, St.bananaSeen = weak(), weak(), weak()
         St.selfLocked = false
+        if keep and (keep.role or keep.team) then
+            local function soft(c)
+                return c == "confirmed" and "likely" or c
+            end
+            if keep.role then
+                me.role, me.roleConf, me.reason = keep.role, soft(keep.roleConf), keep.reason
+                St.notified[LocalPlayer] = { [keep.role] = true } -- sudah dikasih tahu, jangan notif ulang
+            end
+            if keep.team then
+                me.team, me.teamConf, me.teamReason = keep.team, soft(keep.teamConf), keep.teamReason
+            end
+        end
+        -- ronde baru: coba lagi modul / fungsi / layar yang tadi gagal
+        for _, r in pairs(St.req) do
+            r.miss, r.next = 0, -1
+        end
+        for _, f in pairs(St.rcFuncs) do
+            f.fails, f.dead = 0, false
+        end
+        St.gui.gap, St.gui.next = 2, 0
         St.lastReset = now()
         bump()
         pushFeed("New round (" .. tostring(reason) .. ")")
     end
 
     local function checkPhase()
-        local ph = Game.phase()
+        local v = globalCached("gamePhase")
+        local ph = v ~= nil and string.lower(tostring(v)) or nil
         if ph == St.phase then
             return
         end
         St.phase = ph
+        St.gui.gap, St.gui.next = 2, 0 -- fase baru: layar role mungkin baru muncul
         if St.phaseInit and ph and hasAny(ph, K.RESET_PHASES) and not hasAny(ph, K.IN_ROUND)
             and now() - St.lastReset > 10 then
             Intel.reset("new round")
@@ -4591,10 +5151,6 @@ return function(ctx)
         try("channels", scanChannels)
         try("corpses", scanCorpses)
         local t = now()
-        if not St.animModuleOk and t - St.t.anim >= 30 then
-            St.t.anim = t
-            try("animModule", loadAnimNames)
-        end
         if t - St.t.idKind >= 30 then
             St.t.idKind = t
             for id, k in pairs(St.idKind) do
@@ -4785,11 +5341,15 @@ return function(ctx)
             disconnectAll(h.charConns)
         end
         St.hooks = {}
-        St.doors = weak()
+        for _, c in pairs(St.doorConns) do
+            pcall(c.Disconnect, c)
+        end
+        St.doors, St.doorConns = weak(), weak()
         St.doorCount = 0
         St.lockerTrack = {}
         St.posHist = {}
         St.selfBusy = false
+        St.gui.pg, St.gui.conn = nil, nil
         return true
     end
 
@@ -4951,6 +5511,16 @@ return function(ctx)
                 return ok and p or nil
             end
         elseif t == "string" then
+            -- Kunci tabel game kadang UserId dalam bentuk string ("4145298002").
+            if string.match(v, "^%d+$") then
+                local n = tonumber(v)
+                if n and n > 1000 then
+                    local ok, p = pcall(Players.GetPlayerByUserId, Players, n)
+                    if ok and p then
+                        return p
+                    end
+                end
+            end
             local l = string.lower(v)
             for _, p in ipairs(Players:GetPlayers()) do
                 if string.lower(p.Name) == l or string.lower(p.DisplayName) == l then
@@ -4986,6 +5556,26 @@ return function(ctx)
         return nil
     end
 
+    -- "witches" -> Witch, "bodyguards" -> Bodyguard, "mafia" -> Mafia
+    local function roleFromKey(k)
+        if type(k) ~= "string" then
+            return nil
+        end
+        local r = Game.matchRole(k)
+        if r then
+            return r
+        end
+        local l = string.lower(k)
+        local single = string.match(l, "^(.-)es$")
+        r = single and Game.matchRole(single)
+        if r then
+            return r
+        end
+        single = string.match(l, "^(.-)s$")
+        return single and Game.matchRole(single) or nil
+    end
+    Net.roleFromKey = roleFromKey
+
     local PLAYER_KEYS = { player = true, plr = true, user = true, userid = true, target = true, character = true, char = true, victim = true }
     local ROLE_KEYS = { role = true, rolename = true, class = true }
     local TEAM_KEYS = { team = true, teamname = true, faction = true, alignment = true, side = true }
@@ -5015,6 +5605,22 @@ return function(ctx)
             end
             if p and (r or tm) then
                 out[#out + 1] = { player = p, role = r, team = tm }
+            end
+            -- { mafia = {...}, witches = {...} }: daftar anggota per role
+            for k, v in pairs(t) do
+                local kr = (type(v) == "table") and roleFromKey(k) or nil
+                if kr then
+                    for _, member in pairs(v) do
+                        local mp = playerFrom(member)
+                        if not mp and type(member) == "table" then
+                            mp = playerFrom(rawget(member, "player") or rawget(member, "Player") or rawget(member, "userId")
+                                or rawget(member, "UserId") or rawget(member, "name"))
+                        end
+                        if mp then
+                            out[#out + 1] = { player = mp, role = kr }
+                        end
+                    end
+                end
             end
             for k, v in pairs(t) do
                 local kp = nil
@@ -5141,7 +5747,17 @@ return function(ctx)
 
     local function onMessage(source)
         return function(...)
-            local texts = stringsIn(table.pack(...))
+            local args = table.pack(...)
+            for i = 1, args.n do
+                local v = args[i]
+                if typeof(v) == "Instance" and playerFrom(v) then
+                    return -- chat pemain (argumen pembicara), bukan pengumuman
+                end
+                if type(v) == "string" and string.find(v, "^%s*<font[^>]*><b>[^<]+:</b>") then
+                    return
+                end
+            end
+            local texts = stringsIn(args)
             for _, t in ipairs(texts) do
                 call("message", t, source)
             end
@@ -5159,6 +5775,34 @@ return function(ctx)
             local victims = Net.playersIn(args)
             for p in pairs(victims) do
                 call("death", p, source)
+            end
+        end
+    end
+
+    -- Log debug alur game dari server: ">>> phase 'Night' START", "=== CYCLE start (day 2) ===",
+    -- "role[detainer].onGameStateChanged" (role yang ada di ronde ini).
+    Net.rolesInRound = {}
+    local function onGameFlow(...)
+        local args = table.pack(...)
+        for i = 1, args.n do
+            local line = args[i]
+            if type(line) == "string" then
+                local phase = string.match(line, ">>> phase '([^']+)' START")
+                if phase then
+                    Net.phaseText = phase
+                    call("phase", phase)
+                end
+                if string.find(line, "CYCLE start (day 1)", 1, true) then
+                    Net.rolesInRound = {}
+                    call("round", 1)
+                end
+                local rk = string.match(line, "role%[([%a]+)%]")
+                if rk then
+                    local r = Game.matchRole(rk)
+                    if r then
+                        Net.rolesInRound[r] = true
+                    end
+                end
             end
         end
     end
@@ -5211,7 +5855,13 @@ return function(ctx)
         local found = Net.extract(res)
         handlePairs(found, "confirmed", reason)
         local members = Net.playersIn(res)
-        local myTeam = Net.selfRole and Game.teamOf(Net.selfRole) or nil
+        local myTeam = nil
+        local first = res[1]
+        if type(first) == "table" then
+            local tf = rawget(first, "team") or rawget(first, "Team")
+            myTeam = tf and Game.normalizeTeam(tf) or nil
+        end
+        myTeam = myTeam or (Net.selfRole and Game.teamOf(Net.selfRole)) or nil
         for p in pairs(members) do
             if p ~= LocalPlayer then
                 call("teammate", p, myTeam, reason)
@@ -5377,6 +6027,7 @@ return function(ctx)
         found.deathCutscene = listen(Net.service("gameService", "playDeathCutscene"), onDeath("death cutscene"))
         found.bodyFound = listen(Net.service("gameService", "playBodyFoundCutscene"), onDeath("body found"))
         found.topbar = listen(Net.service("gameService", "setTopbarText"), onTopbar)
+        found.gameFlow = listen(RS:FindFirstChild("GameFlowLogRemote"), onGameFlow)
         found.roleService = Net.service("roleService", "role") ~= nil
         found.onStab = Net.role("mafia", "onStab") ~= nil
         found.onHeal = Net.role("doctor", "onHeal") ~= nil
@@ -5617,8 +6268,17 @@ return function(ctx)
         return ok and r == true
     end
 
-    -- Cocokkan nama: exact dulu (urut kandidat), lalu substring.
-    local function matchByName(entries, names, resolveFn)
+    local function hasAny(s, list)
+        for _, w in ipairs(list or {}) do
+            if string.find(s, w, 1, true) then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Cocokkan nama: exact dulu (urut kandidat, SEMUA sumber), baru substring (nama berisi kata `avoid` dilewati).
+    local function matchByName(entries, names, resolveFn, avoid)
         for pass = 1, 2 do
             for _, c in ipairs(names) do
                 local lc = string.lower(c)
@@ -5627,7 +6287,7 @@ return function(ctx)
                     if pass == 1 then
                         hit = e.key == lc
                     else
-                        hit = string.find(e.key, lc, 1, true) ~= nil
+                        hit = string.find(e.key, lc, 1, true) ~= nil and not hasAny(e.key, avoid)
                     end
                     if hit then
                         local a = resolveFn(e)
@@ -5639,6 +6299,16 @@ return function(ctx)
             end
         end
         return nil
+    end
+
+    local function sortEntries(list)
+        pcall(table.sort, list, function(a, b)
+            if a.key == b.key then
+                return tostring(a.name or "") < tostring(b.name or "")
+            end
+            return a.key < b.key
+        end)
+        return list
     end
 
     -- Fallback 1: Animation di PlayerScripts / ReplicatedFirst / Backpack / Character / StarterPack (cache 10 s).
@@ -5667,7 +6337,7 @@ return function(ctx)
             pcall(function()
                 for _, d in ipairs(r:GetDescendants()) do
                     if d:IsA("Animation") then
-                        list[#list + 1] = { key = string.lower(d.Name), value = d }
+                        list[#list + 1] = { key = string.lower(d.Name), name = d.Name, value = d }
                     end
                 end
             end)
@@ -5744,25 +6414,51 @@ return function(ctx)
         return makeAnim(e.name, v)
     end
 
-    local function findAnim(names)
-        local ok, a = pcall(Game.findAnimation, names)
-        if ok and isAnimation(a) then
-            return a
+    -- Satu daftar dari semua sumber: scan GameAPI (assets.animations + ReplicatedStorage), lalu
+    -- PlayerScripts / Backpack / Character / StarterPack, lalu modul ID. Urutan dalam tiap sumber = urut nama
+    -- (pairs() tidak deterministik).
+    local function animEntries()
+        local list = {}
+        local okS, map = pcall(Game.scanAnimations, false)
+        if okS and type(map) == "table" then
+            local scanned = {}
+            for k, v in pairs(map) do
+                if type(k) == "string" then
+                    scanned[#scanned + 1] = { key = string.lower(k), name = k, value = v }
+                end
+            end
+            for _, e in ipairs(sortEntries(scanned)) do
+                list[#list + 1] = e
+            end
         end
-        local hit = matchByName(extraAnimEntries(), names, function(e)
-            return e.value
-        end)
-        if hit then
-            return hit
+        for _, e in ipairs(extraAnimEntries()) do
+            list[#list + 1] = e
         end
-        local entries, seen = {}, {}
+        local mods, seen = {}, {}
         for _, path in ipairs({ "assets.animations.player1", "assets.animations" }) do
-            flattenAnims(req(path), entries, 0, seen)
+            flattenAnims(req(path), mods, 0, seen)
         end
-        if #entries == 0 then
-            return nil
+        for _, e in ipairs(sortEntries(mods)) do
+            e.fromModule = true
+            list[#list + 1] = e
         end
-        return matchByName(entries, names, moduleAnimValue)
+        return list
+    end
+
+    local function resolveAnimEntry(e)
+        if e.fromModule then
+            return moduleAnimValue(e)
+        end
+        local v = e.value
+        -- Animation yang sudah di-Destroy (Parent nil) bisa masih ada di cache scan
+        if isAnimation(v) and idx(v, "Parent") ~= nil then
+            return v
+        end
+        return nil
+    end
+
+    local function findAnim(names, avoid)
+        return matchByName(animEntries(), names, resolveAnimEntry, avoid)
     end
 
     local function sameAnim(a, b)
@@ -5846,7 +6542,7 @@ return function(ctx)
     local Busy = { on = false }
     local Last = { method = nil }
     local Crawl = {
-        on = false, hb = nil, hum = nil, crawl = nil, idle = nil, crawlAnim = nil, idleAnim = nil,
+        on = false, hb = nil, st = nil, hum = nil, crawl = nil, idle = nil, crawlAnim = nil, idleAnim = nil,
         mode = nil, still = 0, flagT = 0, paused = false, saved = nil, speed = 4, wrote = false, retry = 0,
     }
     local Shot = { last = {}, token = {}, tracks = {} }
@@ -5858,7 +6554,9 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Animasi
     ------------------------------------------------------------------
-    local function loadTrack(animator, anim, looped)
+    -- priorityName: prioritas lebih tinggi (mis. "Action4") supaya one-shot tidak dicampur 50/50 dengan
+    -- track crawl yang juga Action; fallback ke Action kalau enum itu tidak ada di engine ini.
+    local function loadTrack(animator, anim, looped, priorityName)
         local ok, track = pcall(function()
             return animator:LoadAnimation(anim)
         end)
@@ -5866,9 +6564,23 @@ return function(ctx)
             return nil
         end
         pcall(function()
-            track.Priority = Enum.AnimationPriority.Action
             track.Looped = looped
         end)
+        local okP = false
+        if priorityName then
+            okP = pcall(function()
+                local pr = Enum.AnimationPriority[priorityName]
+                if pr == nil then
+                    error("no priority")
+                end
+                track.Priority = pr
+            end)
+        end
+        if not okP then
+            pcall(function()
+                track.Priority = Enum.AnimationPriority.Action
+            end)
+        end
         return track
     end
 
@@ -5986,6 +6698,20 @@ return function(ctx)
         Crawl.mode = mode
     end
 
+    local function crawlModePlaying(mode)
+        local track = Crawl.crawl
+        if mode == "idle" and Crawl.idle then
+            track = Crawl.idle
+        end
+        if not track then
+            return true
+        end
+        local ok, playing = pcall(function()
+            return track.IsPlaying
+        end)
+        return not ok or playing == true
+    end
+
     local function crawlStep(dt)
         if not Crawl.on or not live() then
             return
@@ -6009,9 +6735,11 @@ return function(ctx)
             Crawl.flagT = 1
         end
         -- beneran downed? biarkan game yang animasiin (cek tiap 0.25 s, bukan tiap frame)
+        local recheck = false
         Crawl.flagT = Crawl.flagT + dt
         if Crawl.flagT >= 0.25 then
             Crawl.flagT = 0
+            recheck = true
             local was = Crawl.paused
             Crawl.paused = flag(LocalPlayer, "Downed")
             if Crawl.paused and not was then
@@ -6027,6 +6755,9 @@ return function(ctx)
                 hum.WalkSpeed = Crawl.speed
             end
             Crawl.wrote = true
+        elseif Crawl.wrote then
+            -- crawlKeepSpeed baru dinyalakan di tengah crawl: balikin speed normal sekarang
+            crawlRestoreSpeed()
         end
         local mag = 0
         pcall(function()
@@ -6046,14 +6777,33 @@ return function(ctx)
         if want == nil then
             want = "idle"
         end
-        if want ~= Crawl.mode then
+        -- recheck: track kita bisa di-Stop game (Animate, equip tool, ganti state) -> putar lagi
+        if want ~= Crawl.mode or (recheck and not crawlModePlaying(want)) then
             crawlSetMode(want)
         end
+    end
+
+    -- Stepped jalan tepat sebelum physics: speed crawl menang dari penulis WalkSpeed lain di Heartbeat
+    -- (mis. speed hack script utama), urutan koneksi Heartbeat tidak dijamin.
+    local function crawlPhysicsStep()
+        if not Crawl.on or Crawl.paused or not Crawl.wrote then
+            return
+        end
+        local hum = Crawl.hum
+        if not hum or setting("crawlKeepSpeed", false) then
+            return
+        end
+        pcall(function()
+            if hum.Parent and hum.WalkSpeed ~= Crawl.speed then
+                hum.WalkSpeed = Crawl.speed
+            end
+        end)
     end
 
     local function crawlOff()
         Crawl.on = false
         Crawl.hb = disconnect(Crawl.hb)
+        Crawl.st = disconnect(Crawl.st)
         crawlRelease()
         crawlRestoreSpeed()
         Crawl.hum = nil
@@ -6082,7 +6832,7 @@ return function(ctx)
         if not crawlAnim then
             return false, MSG.noCrawlAnim
         end
-        local idleAnim = findAnim({ "Wounded Idle", "wounded" })
+        local idleAnim = findAnim({ "Wounded Idle", "wounded" }, { "crawl" })
         if sameAnim(idleAnim, crawlAnim) then
             idleAnim = nil
         end
@@ -6100,6 +6850,10 @@ return function(ctx)
         end
         Crawl.on = true
         Crawl.hb = connect(RunService.Heartbeat, crawlStep)
+        local stepped = idx(RunService, "Stepped")
+        if stepped then
+            Crawl.st = connect(stepped, crawlPhysicsStep)
+        end
         crawlStep(0)
         return true, "Everyone sees you crawling wounded."
     end
@@ -6107,6 +6861,9 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Fake stab / fake gunshot (cuma animasi: tanpa equip tool, tanpa remote)
     ------------------------------------------------------------------
+    -- pose yang bukan aksi (KnifeIdle, KnifeEquip, ...) tidak boleh menang lewat substring "knife"
+    local ONE_SHOT_AVOID = { "idle", "equip", "hold", "walk", "run", "sprint", "jump", "crawl", "wound", "pose" }
+
     local function oneShot(kind, names, label)
         local t = now()
         local last = Shot.last[kind]
@@ -6121,7 +6878,7 @@ return function(ctx)
         if not animator then
             return false, MSG.noAnimator
         end
-        local anim = findAnim(names)
+        local anim = findAnim(names, ONE_SHOT_AVOID)
         if not anim then
             return false, label .. " animation not found in this game version."
         end
@@ -6136,7 +6893,7 @@ return function(ctx)
                     cache.track:Destroy()
                 end)
             end
-            track = loadTrack(animator, anim, false)
+            track = loadTrack(animator, anim, false, "Action4")
             if not track then
                 return false, "Could not load " .. tostring(anim.Name) .. "."
             end
@@ -6173,11 +6930,11 @@ return function(ctx)
     end
 
     function Actions.fakeStab()
-        return oneShot("stab", { "KnifeSwing", "stab", "Knife" }, "Stab")
+        return oneShot("stab", { "KnifeSwing" }, "Stab")
     end
 
     function Actions.fakeShot()
-        return oneShot("shot", { "gunShot", "gunshot", "Shoot", "Fire" }, "Gunshot")
+        return oneShot("shot", { "Glock" }, "Gunshot")
     end
 
     ------------------------------------------------------------------
@@ -6193,6 +6950,11 @@ return function(ctx)
         Ghost.pending = nil
         if p.root.Parent and p.char == LocalPlayer.Character then
             pcall(function()
+                -- game memindahkan kita di antara Heartbeat dan render (kursi meeting, reset ronde)?
+                -- posisi baru itu yang dipakai, jangan ditimpa posisi lama
+                if (p.root.CFrame.Position - p.shifted.Position).Magnitude > 2 then
+                    return
+                end
                 p.root.CFrame = p.cf
                 p.root.AssemblyLinearVelocity = p.vel
             end)
@@ -6220,9 +6982,15 @@ return function(ctx)
         if not okSave then
             return
         end
-        Ghost.pending = { root = root, char = char, cf = cf, vel = vel }
+        local okShift, shifted = pcall(function()
+            return cf + Vector3.new(0, -depth, 0)
+        end)
+        if not okShift then
+            return
+        end
+        Ghost.pending = { root = root, char = char, cf = cf, vel = vel, shifted = shifted }
         local okSet = pcall(function()
-            root.CFrame = cf + Vector3.new(0, -depth, 0)
+            root.CFrame = shifted
         end)
         if not okSet then
             Ghost.pending = nil
@@ -6286,7 +7054,7 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Target
     ------------------------------------------------------------------
-    local bringOff
+    local bringOff, bringRetarget
 
     function Actions.livingPlayers()
         local out = {}
@@ -6320,7 +7088,7 @@ return function(ctx)
         if p == nil then
             Target.player = nil
             if Bring.on then
-                bringOff(nil)
+                bringOff("Target cleared, bring turned off.")
             end
             return true, "Target cleared."
         end
@@ -6336,10 +7104,11 @@ return function(ctx)
         if not alive(p) then
             return false, MSG.noTarget
         end
-        if Bring.on and Bring.player ~= p then
-            bringOff(nil)
-        end
         Target.player = p
+        -- bring ikut pindah ke target baru (target lama dibalikin ke posisi aslinya)
+        if Bring.on and Bring.player ~= p then
+            bringRetarget(p)
+        end
         return true, "Target: " .. nameOf(p)
     end
 
@@ -6364,6 +7133,22 @@ return function(ctx)
         return nil
     end
 
+    -- Tulis balik posisi asli target. Penting kalau tidak ada update replikasi yang menimpa posisi bring
+    -- (target diam, atau duduk di kursi anchored lewat SeatWeld saat meeting). Kalau CFrame sekarang sudah
+    -- bukan yang kita set, itu update replikasi yang lebih baru: biarkan.
+    local function bringRestoreReal()
+        local r, real, set = Bring.root, Bring.real, Bring.lastSet
+        Bring.lastSet = nil
+        if not (r and real and set) then
+            return
+        end
+        pcall(function()
+            if r.Parent and r.CFrame == set then
+                r.CFrame = real
+            end
+        end)
+    end
+
     bringOff = function(reason)
         local was = Bring.on
         Bring.on = false
@@ -6372,10 +7157,17 @@ return function(ctx)
             Bring.bound = false
         end
         Bring.conn = disconnect(Bring.conn)
+        bringRestoreReal()
         Bring.player, Bring.root, Bring.real, Bring.lastSet = nil, nil, nil, nil
         if was and reason then
             notify("Bring target", reason)
         end
+    end
+
+    bringRetarget = function(p)
+        bringRestoreReal()
+        local _, _, r = body(p)
+        Bring.player, Bring.root, Bring.real, Bring.lastSet, Bring.checkT = p, r, nil, nil, now()
     end
 
     local function bringStep()
@@ -6391,13 +7183,18 @@ return function(ctx)
         -- validasi target (isAlive) dibatasi 4x per detik
         if t - Bring.checkT >= 0.25 or not (tRoot and tRoot.Parent) then
             Bring.checkT = t
-            p = Actions.getTarget()
-            local _, _, r = body(p)
-            if p ~= Bring.player or r ~= Bring.root then
-                Bring.real, Bring.lastSet = nil, nil
+            local np = Actions.getTarget()
+            local _, _, r = body(np)
+            if not (np and r and r.Parent) then
+                bringOff("Target lost, bring turned off.")
+                return
             end
-            Bring.player, Bring.root = p, r
-            tRoot = r
+            if np ~= Bring.player or r ~= Bring.root then
+                bringRestoreReal()
+                Bring.real = nil
+            end
+            Bring.player, Bring.root = np, r
+            p, tRoot = np, r
         end
         if not (p and tRoot and tRoot.Parent) then
             bringOff("Target lost, bring turned off.")
@@ -6413,8 +7210,9 @@ return function(ctx)
             if Bring.lastSet == nil or cur ~= Bring.lastSet then
                 Bring.real = cur
             end
-            -- selama TSR / THR target dibiarkan di posisi asli (cek jarak di client game)
+            -- selama TSR / THR target ditaruh balik di posisi asli (cek jarak / hitbox di client game)
             if Busy.on then
+                bringRestoreReal()
                 return
             end
             local myCF = myRoot.CFrame
@@ -6466,12 +7264,13 @@ return function(ctx)
         local best, bestD = nil, nil
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= LocalPlayer and alive(p) and flag(p, flagName) then
-                local _, _, r = body(p)
-                if r then
+                -- posisi asli (bukan posisi palsu hasil Bring)
+                local cf = realTargetCF(p)
+                if cf then
                     local d = 0
                     if myPos then
                         pcall(function()
-                            d = (r.CFrame.Position - myPos).Magnitude
+                            d = (cf.Position - myPos).Magnitude
                         end)
                     end
                     if not best or d < bestD then
@@ -6532,7 +7331,55 @@ return function(ctx)
     ------------------------------------------------------------------
     local STAB_FNS = { "handleMafiaStab", "handleStab", "tryStab", "attemptStab" }
     local HEAL_WORDS = { "heal", "revive", "save", "pick" }
-    local SKIP_PREFIX = { "set", "get", "is", "can", "has", "on", "init", "start", "setup", "update", "render", "play", "show", "hide", "destroy", "clean" }
+    local SKIP_FIRST = {}
+    for _, w in ipairs({ "set", "get", "is", "can", "has", "on", "init", "start", "setup", "update", "render", "play", "show", "hide", "destroy", "clean" }) do
+        SKIP_FIRST[w] = true
+    end
+
+    -- "handleDoctorSave" / "Revive_Prompt" / "Pick up" -> { "handle", "doctor", "save" } dst (huruf kecil)
+    local function nameWords(s)
+        local out = {}
+        s = tostring(s or "")
+        s = string.gsub(s, "(%l)(%u)", "%1 %2")
+        s = string.gsub(s, "(%u)(%u%l)", "%1 %2")
+        for w in string.gmatch(string.lower(s), "%a+") do
+            out[#out + 1] = w
+        end
+        return out
+    end
+
+    -- Kata utuh + imbuhan umum: heal/heals/healed/healing/healer, revive/reviving, stab/stabbing.
+    -- "health" TIDAK cocok dengan "heal".
+    local WORD_SUFFIX = { [""] = true, s = true, ed = true, ing = true, er = true }
+    local function hasWord(tokens, w)
+        local stem = nil
+        if string.sub(w, -1) == "e" then
+            stem = string.sub(w, 1, -2)
+        end
+        local dbl = w .. string.sub(w, -1)
+        for _, t in ipairs(tokens) do
+            if string.sub(t, 1, #w) == w and WORD_SUFFIX[string.sub(t, #w + 1)] then
+                return true
+            end
+            if stem and (t == stem .. "ing" or t == stem .. "ed") then
+                return true
+            end
+            if t == dbl .. "ing" or t == dbl .. "ed" then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- index kata pertama di `list` yang ada di tokens, atau nil
+    local function firstWord(tokens, list)
+        for i, w in ipairs(list) do
+            if hasWord(tokens, w) then
+                return i
+            end
+        end
+        return nil
+    end
 
     local function exactFn(host, names)
         for _, n in ipairs(names) do
@@ -6564,27 +7411,19 @@ return function(ctx)
         if okMt and type(mt) == "table" and type(rawget(mt, "__index")) == "table" then
             scan(rawget(mt, "__index"))
         end
+        -- handle* selalu di depan, lalu urutan kata; kata utuh saja (healthChanged bukan "heal")
         local best, bestScore, bestFn = nil, nil, nil
         for name, fn in pairs(found) do
-            local l = string.lower(name)
-            local skip = false
-            for _, pre in ipairs(SKIP_PREFIX) do
-                if string.sub(l, 1, #pre) == pre then
-                    skip = true
-                    break
-                end
-            end
-            if not skip then
-                for i, w in ipairs(words) do
-                    if string.find(l, w, 1, true) then
-                        local score = i * 10
-                        if string.sub(l, 1, 6) ~= "handle" then
-                            score = score + 5
-                        end
-                        if not best or score < bestScore or (score == bestScore and name < best) then
-                            best, bestScore, bestFn = name, score, fn
-                        end
-                        break
+            local toks = nameWords(name)
+            if toks[1] and not SKIP_FIRST[toks[1]] then
+                local i = firstWord(toks, words)
+                if i then
+                    local score = i * 10
+                    if toks[1] ~= "handle" then
+                        score = score + 100
+                    end
+                    if not best or score < bestScore or (score == bestScore and name < best) then
+                        best, bestScore, bestFn = name, score, fn
                     end
                 end
             end
@@ -6700,14 +7539,17 @@ return function(ctx)
         return nil, nil
     end
 
+    -- Set argumen berikutnya cuma dicoba kalau yang ini ERROR (konvensi salah). Return false = handler
+    -- menolak (cooldown dsb.): tetap dihitung terpanggil, jangan dipanggil ulang dengan argumen lain.
+    -- return ok, argsDipakai, nilaiReturn
     local function tryCalls(fn, sets)
         for _, args in ipairs(sets) do
             local ok, r = pcall(fn, table.unpack(args, 1, args.n))
-            if ok and r ~= false then
-                return true, args
+            if ok then
+                return true, args, r
             end
         end
-        return false, nil
+        return false, nil, nil
     end
 
     -- return true (method, self dulu), false (fungsi biasa), nil (gagal)
@@ -6779,8 +7621,9 @@ return function(ctx)
         else
             sets = { pack(host, "NoctisENIX", begin, input), pack(host, char, plr), pack("NoctisENIX", begin, input) }
         end
-        local ok = tryCalls(fn, sets)
-        return ok
+        -- return terpanggil, menolak (return false)
+        local ok, _, r = tryCalls(fn, sets)
+        return ok, ok and r == false
     end
 
     ------------------------------------------------------------------
@@ -6824,46 +7667,97 @@ return function(ctx)
         return nil
     end
 
+    -- token teks prompt (ActionText + ObjectText + Name), nil kalau prompt mati / tidak terbaca
+    local function promptWords(pr)
+        local ok, toks = pcall(function()
+            if pr.Enabled == false then
+                return nil
+            end
+            return nameWords(tostring(pr.ActionText or "") .. " " .. tostring(pr.ObjectText or "") .. " " .. tostring(pr.Name or ""))
+        end)
+        if ok then
+            return toks
+        end
+        return nil
+    end
+
+    -- prompt ambil item (Medkit, Banana, Knife, Flashlight ...) bukan aksi ke pemain
+    local PICKUP_WORDS = { "pick", "pickup", "grab", "take", "collect", "equip", "loot", "buy" }
+
+    -- true kalau prompt ada di dalam Tool (dicari sampai `stop`)
+    local function inTool(pr, stop)
+        local ok, r = pcall(function()
+            local node = pr.Parent
+            while node and node ~= stop do
+                if node:IsA("Tool") then
+                    return true
+                end
+                node = node.Parent
+            end
+            return false
+        end)
+        return not ok or r == true
+    end
+
+    -- Prop dunia: bukan di Tool, bukan di karakter pemain lain / NPC (Model yang punya Humanoid).
+    local function worldProp(pr)
+        local ok, r = pcall(function()
+            local node = pr.Parent
+            local hops = 0
+            while node and node ~= ctx.Workspace and hops < 20 do
+                if node:IsA("Tool") then
+                    return false
+                end
+                if node:IsA("Model") and (Players:GetPlayerFromCharacter(node) or node:FindFirstChildOfClass("Humanoid")) then
+                    return false
+                end
+                node = node.Parent
+                hops = hops + 1
+            end
+            return true
+        end)
+        return ok and r == true
+    end
+
     -- Urutan: prompt di badan target dulu, lalu kata yang lebih spesifik (urutan `words`), lalu yang terdekat.
-    local function matchingPrompts(tChar, center, words, radius)
+    -- Badan target: `words` + `bodyWords` (kata umum seperti help / pick cuma boleh di sini).
+    -- Dalam `radius` stud: cuma prop dunia (lihat worldProp), bukan prompt ambil item, cuma `words`.
+    local function matchingPrompts(st, words, bodyWords, radius)
         local hits, seen = {}, {}
-        local function consider(pr, base, dist)
-            if seen[pr] then
-                return
-            end
-            seen[pr] = true
-            local okT, text = pcall(function()
-                if pr.Enabled == false then
-                    return nil
-                end
-                return string.lower(tostring(pr.ActionText or "") .. " " .. tostring(pr.ObjectText or "") .. " " .. tostring(pr.Name or ""))
-            end)
-            if not (okT and text) then
-                return
-            end
-            for i, w in ipairs(words) do
-                if string.find(text, w, 1, true) then
-                    hits[#hits + 1] = { pr = pr, score = base + i * 20 + dist }
-                    return
-                end
-            end
+        local tChar, center = st.tChar, st.center
+        local bodyList = {}
+        for _, w in ipairs(words) do
+            bodyList[#bodyList + 1] = w
+        end
+        for _, w in ipairs(bodyWords or {}) do
+            bodyList[#bodyList + 1] = w
         end
         pcall(function()
             for _, d in ipairs(tChar:GetDescendants()) do
-                if d:IsA("ProximityPrompt") then
-                    consider(d, 0, 0)
+                if d:IsA("ProximityPrompt") and not seen[d] then
+                    seen[d] = true
+                    local toks = promptWords(d)
+                    local i = toks and not inTool(d, tChar) and firstWord(toks, bodyList)
+                    if i then
+                        hits[#hits + 1] = { pr = d, score = i * 20 }
+                    end
                 end
             end
         end)
         if center then
             for _, pr in ipairs(allPrompts()) do
-                local pos = promptPos(pr)
-                if pos then
+                if not seen[pr] then
+                    seen[pr] = true
+                    local pos = promptPos(pr)
                     local okD, d = pcall(function()
                         return (pos - center).Magnitude
                     end)
-                    if okD and d <= radius then
-                        consider(pr, 1000, d)
+                    if pos and okD and d <= radius and worldProp(pr) then
+                        local toks = promptWords(pr)
+                        local i = toks and not firstWord(toks, PICKUP_WORDS) and firstWord(toks, words)
+                        if i then
+                            hits[#hits + 1] = { pr = pr, score = 1000 + i * 20 + d }
+                        end
                     end
                 end
             end
@@ -6904,7 +7798,9 @@ return function(ctx)
     end
 
     ------------------------------------------------------------------
-    -- Strategi (return "ok", method | "skip", reason | "fail", reason)
+    -- Strategi. Dua tahap supaya pencarian mahal (require, getgc, scan prompt) jalan SEBELUM teleport:
+    --   prepare(st) -> "ready", run | "skip", reason      (dipanggil sebelum pindah)
+    --   run()       -> "ok", method | "fail", method      (dipanggil saat sudah di belakang target)
     ------------------------------------------------------------------
     local function findTool(words)
         local places = { LocalPlayer.Character, LocalPlayer:FindFirstChildOfClass("Backpack") }
@@ -6931,35 +7827,46 @@ return function(ctx)
             if not host then
                 return "skip", notLoaded
             end
-            local style = nil
-            local setFn = fnOf(host, "setTargetCharacter")
-            if setFn then
-                style = callSetter(host, setFn, st.tChar)
-            end
             local name, fn = actionPicker(host, strict)
             if not fn then
                 return "skip", notLoaded
             end
-            if callAction(host, fn, style, st) then
-                return "ok", "handler:" .. name
+            local setFn = fnOf(host, "setTargetCharacter")
+            local label = "handler:" .. name
+            return "ready", function()
+                local style = nil
+                if setFn then
+                    style = callSetter(host, setFn, st.tChar)
+                end
+                local called, refused = callAction(host, fn, style, st)
+                if refused then
+                    return "fail", label .. " (refused)"
+                end
+                if called then
+                    return "ok", label
+                end
+                return "fail", label .. " (errored)"
             end
-            return "fail", "handler " .. name .. " errored"
         end
     end
 
-    local function promptStrategy(words)
+    local function promptStrategy(words, bodyWords)
         return function(st)
-            local list = matchingPrompts(st.tChar, st.center, words, 12)
+            local list = matchingPrompts(st, words, bodyWords, 12)
             if #list == 0 then
                 return "skip", nil
             end
-            for _, pr in ipairs(list) do
-                local how = firePrompt(pr)
-                if how then
-                    return "ok", "prompt:" .. how
+            return "ready", function()
+                for _, pr in ipairs(list) do
+                    if idx(pr, "Parent") ~= nil then
+                        local how = firePrompt(pr)
+                        if how then
+                            return "ok", "prompt:" .. how
+                        end
+                    end
                 end
+                return "fail", "prompt (could not fire)"
             end
-            return "fail", "prompt could not be fired"
         end
     end
 
@@ -6969,42 +7876,50 @@ return function(ctx)
             if not tool then
                 return "skip", nil
             end
-            if tool.Parent ~= st.char then
-                local okE = pcall(function()
-                    st.hum:EquipTool(tool)
-                end)
-                if not okE then
-                    return "fail", "could not equip " .. tostring(tool.Name)
+            local label = "tool:" .. tostring(tool.Name)
+            return "ready", function()
+                if tool.Parent ~= st.char then
+                    local okE = pcall(function()
+                        st.hum:EquipTool(tool)
+                    end)
+                    if not okE then
+                        return "fail", label .. " (could not equip)"
+                    end
+                    st.equipped = tool
+                    task.wait()
                 end
-                st.equipped = tool
-                task.wait()
+                local okA = pcall(function()
+                    tool:Activate()
+                end)
+                if okA then
+                    return "ok", label
+                end
+                return "fail", label .. " (could not use)"
             end
-            local okA = pcall(function()
-                tool:Activate()
-            end)
-            if okA then
-                return "ok", "tool:" .. tostring(tool.Name)
-            end
-            return "fail", "could not use " .. tostring(tool.Name)
         end
     end
 
     -- Remote asli game (ReplicatedStorage.RoleNetworks.mafia.onStab / doctor.onHeal) lewat Net module.
     local function netStrategy(kind)
+        -- Protokol strategi: tahap siapkan (sebelum teleport) return "ready", runner;
+        -- runner dijalankan SETELAH teleport dan return "ok"/"fail", info.
         return function(st)
             local net = ctx.Net
             local fn = net and (kind == "stab" and net.stab or net.heal)
             if type(fn) ~= "function" then
                 return "skip", nil
             end
-            local ok, method = fn(st.p)
-            if ok then
-                return "ok", method
-            end
-            if type(method) == "string" and string.find(method, "not found", 1, true) then
+            local remote = net.role and net.role(kind == "stab" and "mafia" or "doctor", kind == "stab" and "onStab" or "onHeal")
+            if not remote then
                 return "skip", nil
             end
-            return "fail", "remote: " .. tostring(method)
+            return "ready", function()
+                local ok, method = fn(st.p)
+                if ok then
+                    return "ok", method
+                end
+                return "fail", "remote: " .. tostring(method)
+            end
         end
     end
 
@@ -7013,7 +7928,8 @@ return function(ctx)
         handlerStrategy("mafia", function(host)
             return exactFn(host, STAB_FNS)
         end, MSG.stabNotLoaded),
-        promptStrategy({ "stab", "kill", "attack", "knife" }),
+        -- "knife" cuma untuk prompt di badan target (prompt Knife di dunia = ambil item)
+        promptStrategy({ "stab", "kill", "attack" }, { "knife" }),
         toolStrategy({ "knife" }),
     }
     local HEAL_STRATEGIES = {
@@ -7021,7 +7937,8 @@ return function(ctx)
         handlerStrategy("doctor", function(host, strict)
             return wordFn(host, strict and STRICT_HEAL_WORDS or HEAL_WORDS)
         end, MSG.healNotLoaded),
-        promptStrategy({ "heal", "revive", "save", "help", "pick" }),
+        -- help / pick terlalu umum: cuma untuk prompt di badan pemain yang downed
+        promptStrategy({ "heal", "revive", "save" }, { "help", "pick" }),
         toolStrategy({ "medkit", "med kit", "heal", "bandage", "syringe" }),
     }
 
@@ -7107,7 +8024,40 @@ return function(ctx)
         end
     end
 
+    -- Berapa lama menunggu efek satu strategi sebelum coba yang berikutnya: minimal tsrConfirm,
+    -- cukup untuk round-trip ke server kalau ping tinggi, maksimal 1 s.
+    local function confirmWindow()
+        local t = tonumber(setting("tsrConfirm", 0.3)) or 0.3
+        local okP, ping = pcall(function()
+            return LocalPlayer:GetNetworkPing()
+        end)
+        if okP and type(ping) == "number" and ping > 0 then
+            t = math.max(t, math.min(ping * 2 + 0.1, 1))
+        end
+        return t
+    end
+
     local function tripInner(op, st)
+        -- 1. siapkan semua strategi selagi masih di posisi awal: require / getgc / scan prompt yang
+        --    mahal tidak boleh bikin kita berdiri lama di belakang target
+        local runners, reason = {}, nil
+        for _, strat in ipairs(op.strategies) do
+            local okP, status, a = pcall(strat, st)
+            if not okP then
+                warnOnce(op.kind .. "prep" .. tostring(status), status)
+            elseif status == "ready" and type(a) == "function" then
+                runners[#runners + 1] = a
+            elseif status == "skip" and a and not reason then
+                reason = a
+            end
+        end
+        if #runners == 0 then
+            -- tidak ada yang bisa dicoba: jangan teleport sama sekali
+            Last.method = nil
+            return false, withNote(reason or op.notLoaded, op.note)
+        end
+        -- target bisa sudah jalan selama prepare (require bisa yield)
+        st.tcf = realTargetCF(st.p) or st.tcf
         local dist = tonumber(setting("tsrDistance", 3)) or 3
         local origin = st.root.CFrame
         st.origin = origin
@@ -7117,22 +8067,35 @@ return function(ctx)
         end
         st.moved = true
         st.pin = startPin(st.p, dist)
-        -- 2 frame supaya server lihat posisi baru
+        -- 2 frame + jeda kecil: replikasi posisi karakter terpisah dari remote, server harus sudah
+        -- lihat kita di dekat target sebelum remote aksi sampai
         task.wait()
         task.wait()
-        local res = { ran = false, method = nil, reason = nil }
-        for _, strat in ipairs(op.strategies) do
-            local okS, status, info = pcall(strat, st)
+        local pre = tonumber(setting("tsrPre", 0.12)) or 0.12
+        if pre > 0 then
+            task.wait(pre)
+        end
+        -- 2. jalankan berurutan. "Tidak error" belum tentu berhasil (handler di tabel modul bisa return
+        --    diam-diam, prompt bisa tidak bereaksi), jadi tunggu efeknya dulu sebelum lanjut / berhenti.
+        local res = { ran = false, confirmed = false, method = nil, failMethod = nil }
+        local confirm = confirmWindow()
+        for _, run in ipairs(runners) do
+            local okS, status, info = pcall(run)
             if not okS then
-                warnOnce(op.kind .. tostring(status), status)
+                warnOnce(op.kind .. "run" .. tostring(status), status)
             elseif status == "ok" then
                 res.ran, res.method = true, info
-                break
-            elseif status == "skip" and info and not res.reason then
-                res.reason = info
+                if pollUntil(op.check, confirm) then
+                    res.confirmed = true
+                    break
+                end
+            elseif not res.failMethod then
+                res.failMethod = info
             end
         end
-        task.wait(tonumber(setting("tsrHold", 0.35)) or 0.35)
+        if not res.confirmed then
+            task.wait(tonumber(setting("tsrHold", 0.35)) or 0.35)
+        end
         st.pin = disconnect(st.pin)
         -- selalu balik
         placeAt(st.char, st.root, origin)
@@ -7143,13 +8106,11 @@ return function(ctx)
             end)
             st.equipped = nil
         end
-        Last.method = res.method
-        if not res.ran then
-            return false, withNote(res.reason or op.notLoaded, op.note)
-        end
-        if pollUntil(op.check, op.verifyTime) then
+        Last.method = res.method or res.failMethod
+        if res.confirmed or pollUntil(op.check, op.verifyTime) then
             return true, withNote(op.success .. nameOf(st.p), op.note)
         end
+        -- handler ada tapi error / menolak / tidak ada efek: bukan "belum ke-load"
         return false, withNote(op.none, op.note)
     end
 
@@ -7175,6 +8136,8 @@ return function(ctx)
         local st = { p = p, tChar = tChar, tcf = tcf, center = center, char = char, hum = hum, root = root }
         Busy.on = true
         Ghost.suspended = true
+        -- Bring aktif: taruh target di posisi aslinya selama aksi (cek jarak / hitbox di client game)
+        bringRestoreReal()
         local okRun, ok, msg = pcall(tripInner, op, st)
         -- finally: lepas pin, balik ke posisi awal kalau belum, lepas tool
         st.pin = disconnect(st.pin)
@@ -7195,10 +8158,20 @@ return function(ctx)
         return ok, msg
     end
 
-    local function hurtState(p)
+    local function charDead(c)
+        local ok, r = pcall(function()
+            local h = c and c:FindFirstChildOfClass("Humanoid")
+            return h ~= nil and h.Health <= 0
+        end)
+        return ok and r == true
+    end
+
+    -- Mati dihitung dari flag Dead / Health <= 0 di karakter yang sama. Target keluar game atau
+    -- karakternya hilang BUKAN tanda tusukan kena.
+    local function hurtState(p, tChar)
         return {
             downed = flag(p, "Downed"),
-            dead = flag(p, "Dead") or not alive(p),
+            dead = flag(p, "Dead") or charDead(tChar),
             wound = flag(p, "knifeWound"),
         }
     end
@@ -7215,7 +8188,8 @@ return function(ctx)
         if not allowed then
             return false, MSG.mafiaOnly
         end
-        local before = hurtState(p)
+        local tChar = p.Character
+        local before = hurtState(p, tChar)
         return trip({
             kind = "stab",
             player = p,
@@ -7226,7 +8200,7 @@ return function(ctx)
             success = "Stab landed on ",
             verifyTime = 1,
             check = function()
-                local n = hurtState(p)
+                local n = hurtState(p, tChar)
                 return (n.downed and not before.downed) or (n.dead and not before.dead) or (n.wound and not before.wound)
             end,
         })
@@ -7262,6 +8236,154 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Status / cleanup
     ------------------------------------------------------------------
+    ------------------------------------------------------------------
+    -- Escape meeting seat + Stand on the table (v2.1)
+    -- Game menahan semua orang di kursi (Workspace.Map.Seats) selama meeting.
+    ------------------------------------------------------------------
+    local Escape = { on = false, conn = nil, disabled = {} }
+
+    local function seatsRoot()
+        local map = workspace:FindFirstChild("Map")
+        return map and map:FindFirstChild("Seats") or nil
+    end
+
+    local function unseatOnce()
+        local char, hum, root = myBody()
+        if not (hum and root) then
+            return false
+        end
+        local seat = hum.SeatPart
+        if seat then
+            for _, w in ipairs(seat:GetChildren()) do
+                if w.Name == "SeatWeld" and w:IsA("JointInstance") and (w.Part1 == root or w.Part0 == root) then
+                    pcall(function()
+                        w:Destroy()
+                    end)
+                end
+            end
+            pcall(function()
+                hum.Sit = false
+            end)
+            pcall(function()
+                hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end)
+        end
+        if root.Anchored then
+            pcall(function()
+                root.Anchored = false
+            end)
+        end
+        return seat ~= nil
+    end
+    Actions.unseat = unseatOnce
+
+    local function escapeOff()
+        Escape.on = false
+        Escape.conn = disconnect(Escape.conn)
+        for seat in pairs(Escape.disabled) do
+            pcall(function()
+                seat.Disabled = false
+            end)
+        end
+        Escape.disabled = {}
+    end
+
+    function Actions.setEscapeSeat(on)
+        if not on then
+            if not Escape.on then
+                return true, "Seat escape is already off."
+            end
+            escapeOff()
+            return true, "Seat escape off. The next meeting will seat you normally."
+        end
+        if Escape.on then
+            return true, "Seat escape is already on."
+        end
+        local _, hum = myBody()
+        if not hum then
+            return false, MSG.noBodyAct or "You have no living character to move."
+        end
+        Escape.on = true
+        -- Kursi dimatikan lokal biar nggak langsung kesedot duduk lagi pas jalan di dekatnya.
+        local sr = seatsRoot()
+        if sr then
+            for _, d in ipairs(sr:GetDescendants()) do
+                if (d:IsA("Seat") or d:IsA("VehicleSeat")) and not d.Disabled then
+                    local ok = pcall(function()
+                        d.Disabled = true
+                    end)
+                    if ok then
+                        Escape.disabled[d] = true
+                    end
+                end
+            end
+        end
+        Escape.conn = connect(RunService.Heartbeat, function()
+            pcall(unseatOnce)
+        end)
+        local was = unseatOnce()
+        return true, was and "You are out of your seat. Everyone can see you walking around."
+            or "On. Whenever the game seats you, you get pulled back out."
+    end
+
+    -- Titik tengah lingkaran kursi, lalu raycast ke bawah buat cari permukaan meja.
+    local function tableTop()
+        local sr = seatsRoot()
+        if not sr then
+            return nil
+        end
+        local sum, n = Vector3.new(0, 0, 0), 0
+        for _, d in ipairs(sr:GetDescendants()) do
+            if d:IsA("BasePart") then
+                sum = sum + d.Position
+                n = n + 1
+            end
+        end
+        if n == 0 then
+            return nil
+        end
+        local center = sum / n
+        local ignore = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Character then
+                ignore[#ignore + 1] = p.Character
+            end
+        end
+        local hitPos
+        pcall(function()
+            local params = RaycastParams.new()
+            params.FilterType = Enum.RaycastFilterType.Exclude
+            params.FilterDescendantsInstances = ignore
+            local res = workspace:Raycast(center + Vector3.new(0, 25, 0), Vector3.new(0, -60, 0), params)
+            if res then
+                hitPos = res.Position
+            end
+        end)
+        return (hitPos or center) + Vector3.new(0, 3.2, 0)
+    end
+
+    function Actions.toTable()
+        local char, hum, root = myBody()
+        if not char then
+            return false, MSG.noBodyAct or "You have no living character to move."
+        end
+        local pos = tableTop()
+        if not pos then
+            return false, "Meeting table not found on this map."
+        end
+        unseatOnce()
+        local look = root.CFrame.LookVector
+        local flat = Vector3.new(look.X, 0, look.Z)
+        local cf = (flat.Magnitude > 0.01) and CFrame.new(pos, pos + flat) or CFrame.new(pos)
+        if not placeAt(char, root, cf) then
+            return false, "Teleport failed."
+        end
+        if hum.SeatPart then
+            return true, "Moved, but the game is still holding your seat. Turn on Escape meeting seat."
+        end
+        return true, "Standing on the table."
+    end
+
     function Actions.status()
         return {
             fakeCrawl = Crawl.on,
@@ -7270,10 +8392,12 @@ return function(ctx)
             target = Actions.getTarget(),
             lastMethod = Last.method,
             busy = Busy.on,
+            escapeSeat = Escape.on,
         }
     end
 
     function Actions.stop()
+        pcall(escapeOff)
         pcall(crawlOff)
         pcall(ghostOff, nil)
         pcall(bringOff, nil)
@@ -7313,6 +8437,14 @@ return function(ctx)
         end)
     end)
 
+    -- Unload (Janitor) ikut matikan semuanya: render-step binding, track crawl yang looped, WalkSpeed.
+    -- stop() idempotent, jadi aman kalau integrator juga memanggilnya sendiri.
+    if type(ctx.track) == "function" then
+        pcall(ctx.track, function()
+            pcall(Actions.stop)
+        end)
+    end
+
     -- Hook khusus test
     Actions._test = {
         setClock = function(fn)
@@ -7330,13 +8462,22 @@ end)()(ctx)
 
 local function intelInfo(p)
     local ok, info = pcall(Intel.info, p)
-    if ok and type(info) == "table" then
-        if type(info.status) ~= "table" then
-            info.status = {}
-        end
-        return info
+    if not (ok and type(info) == "table") then
+        return { status = {} }
     end
-    return { status = {} }
+    local view = {
+        role = info.role,
+        team = info.team,
+        confidence = info.confidence,
+        reason = info.reason,
+        disguise = info.disguise,
+        status = type(info.status) == "table" and info.status or {},
+    }
+    -- Mode ketat (default): tebakan (likely / suspect) nggak ditampilkan sama sekali.
+    if not S.showGuesses and view.confidence ~= "confirmed" then
+        view.role, view.team, view.confidence, view.reason = nil, nil, nil, nil
+    end
+    return view
 end
 
 local function infoTeam(info)
@@ -7898,7 +9039,7 @@ Pages.settings = UI.tab("Settings", "⚙", "Menu, cursor and session")
 
 -- Visuals ------------------------------------------------------------
 UI.section(Pages.esp, "Player ESP")
-UI.toggle(Pages.esp, "Enable ESP", "Highlights every living player through walls. Red is Evil, gold is the Veil, green is Town, white is not figured out yet.", S.esp, function(v)
+UI.toggle(Pages.esp, "Enable ESP", "Highlights every living player through walls. Red is Evil, gold is the Veil, green is Town, purple is Neutral, grey is not known for sure yet.", S.esp, function(v)
     S.esp = v
     if not v then
         ESP.clear()
@@ -7910,8 +9051,11 @@ end)
 UI.toggle(Pages.esp, "Names", "Shows the disguise name plus the real @username behind it.", S.espNames, function(v)
     S.espNames = v
 end)
-UI.toggle(Pages.esp, "Team and role tags", 'EVIL TEAM / [MAFIA] style tags. "?" means likely, "??" means suspected.', S.espRoles, function(v)
+UI.toggle(Pages.esp, "Team and role tags", "EVIL TEAM / [MAFIA] style tags. Only roles that are certain are shown.", S.espRoles, function(v)
     S.espRoles = v
+end)
+UI.toggle(Pages.esp, "Show guesses too", 'Also show likely ("?") and suspected ("??") roles. Off = only certain roles.', S.showGuesses, function(v)
+    S.showGuesses = v
 end)
 UI.toggle(Pages.esp, "Status tags", "DOWNED, DETAINED, SILENCED, IN LOCKER, POISONED. Downed players also blink.", S.espStatus, function(v)
     S.espStatus = v
@@ -7973,6 +9117,19 @@ end, { bind = true, risk = "server" })
 UI.slider(Pages.deception, "Ghost depth", "How far under the map others see you, in studs.", 20, 120, S.ghostDepth, function(v)
     S.ghostDepth = v
 end)
+
+UI.section(Pages.deception, "Meeting")
+local escapeToggle
+escapeToggle = UI.toggle(Pages.deception, "Escape meeting seat", "Gets you out of your seat during meetings so you can walk around while everyone else is stuck at the table. Keeps pulling you out whenever the game seats you.", false, function(v)
+    local ok, msg = Actions.setEscapeSeat(v)
+    if v and not ok then
+        escapeToggle.Set(false, true)
+    end
+    report("Escape meeting seat", ok, msg)
+end, { bind = true, risk = "server" })
+UI.button(Pages.deception, "Stand on the table", "Teleports you on top of the meeting table (gets you out of your seat first).", function()
+    report("Stand on the table", Actions.toTable())
+end, { bind = true, risk = "server", action = "Go" })
 
 -- Teleport -----------------------------------------------------------
 local function targetLabel(p)
@@ -8226,6 +9383,7 @@ end)
 UI.toggle(Pages.settings, "Cursor halo", "Draws a ring under your mouse over the menu so you never lose it.", S.cursorHalo, function(v)
     S.cursorHalo = v
 end)
+UI.note(Pages.settings, "Close the menu (" .. Config.ToggleKey.Name .. ") before you aim a stab or a shot. While it is open the mouse is freed, so the game cannot aim with it.")
 UI.section(Pages.settings, "Game")
 local statusFeed = UI.feed(Pages.settings, "Status", 3)
 UI.section(Pages.settings, "Session")

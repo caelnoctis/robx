@@ -24,8 +24,10 @@ run "module game_api"      node modtest.mjs modules/test_game_api.lua
 run "module net"           node modtest.mjs modules/test_net.lua NetFactory=$ROOT/src/modules/net.lua
 run "module intel"         node modtest.mjs modules/test_intel.lua IntelFactory=$ROOT/src/modules/intel.lua
 run "module intel+net"     node modtest.mjs modules/test_intel_net.lua IntelFactory=$ROOT/src/modules/intel.lua
+run "module intel anim"    node modtest.mjs modules/test_intel_anim.lua IntelFactory=$ROOT/src/modules/intel.lua
 run "module actions"       node modtest.mjs modules/test_actions.lua ActionsFactory=$ROOT/src/modules/actions.lua
 run "module actions+net"   node modtest.mjs modules/test_actions_net.lua ActionsFactory=$ROOT/src/modules/actions.lua
+run "module actions seat"  node modtest.mjs modules/test_actions_seat.lua ActionsFactory=$ROOT/src/modules/actions.lua
 run "module inspector"     node modtest.mjs modules/test_inspector.lua Inspector=$ROOT/src/inspector.lua
 run "module inspector+net" node modtest.mjs modules/test_inspector_net.lua Inspector=$ROOT/src/inspector.lua
 run "smoke ui (stubs)"     node smoke.mjs .debug/NoctisENIX_stub.lua smoke_main.lua

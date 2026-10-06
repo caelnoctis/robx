@@ -145,5 +145,38 @@ responses[onHeal] = function(arg) return true end
 local hOk, hMethod = Net.heal(bob)
 check(hOk == true and string.find(hMethod, "Player", 1, true) ~= nil, "heal with Player: " .. tostring(hMethod))
 
+-- v2.1: format payload asli dari log game
+got.role, got.msg, got.mate = {}, {}, {}
+-- mafia.teamMembers -> { bodyguards = {...}, mafia = {...}, witches = {...} }
+local ex3 = Net.extract({ { bodyguards = { cara }, mafia = { alice, "Bob" }, witches = {} } })
+local r3 = {}
+for _, e in ipairs(ex3) do r3[e.player.Name] = e.role end
+check(r3.Alice == "Mafia" and r3.Bob == "Mafia" and r3.Cara == "Bodyguard", "plural role keys: " .. tostring(r3.Alice) .. "/" .. tostring(r3.Bob) .. "/" .. tostring(r3.Cara))
+-- highlights: kunci UserId string
+check(Net.playerFrom("5001") == alice, "numeric string userId")
+-- onSystemMessage dari chat pemain: (htmlPrefix, text, speakerCharacter) -> diabaikan
+sig(sysMsg, "OnClientEvent"):Fire('<font color="rgb(2, 184, 87)"><b>Fallon:</b></font>', "alice is the witch", alice.Character)
+check(#got.msg == 0, "player chat via onSystemMessage ignored, got " .. #got.msg)
+sig(sysMsg, "OnClientEvent"):Fire("The Harbinger was correct")
+check(#got.msg == 1, "real system message still forwarded")
+-- teamService.teamMembers -> { members = {...}, team = "mafia" }
+responses[teamRF] = function() return { members = { bob }, team = "mafia" } end
+Net.selfRole = "Detective" -- sengaja beda, tim harus diambil dari field team
+Net.reset()
+Net.selfRole = "Detective"
+responses[roleRF] = function() return "detective" end
+Net.step()
+local mate
+for _, m in ipairs(got.mate) do if m[1] == bob then mate = m end end
+check(mate and mate[2] == "EVIL", "team from teamMembers.team field: " .. tostring(mate and mate[2]))
+-- GameFlowLogRemote -> fase pasti
+local flow = __mk("RemoteEvent", { Name = "GameFlowLogRemote" }, RS)
+local Net2 = NetFactory(ctx)
+Net2.start({})
+sig(flow, "OnClientEvent"):Fire("[GAMEFLOW   333.64s] >>> phase 'Night' START")
+sig(flow, "OnClientEvent"):Fire("[GAMEFLOW   333.68s] role[detainer].onGamePhaseChangePreperation START (phase Night)")
+check(Net2.phaseText == "Night", "gameflow phase: " .. tostring(Net2.phaseText))
+check(Net2.rolesInRound.Detainer == true, "roles in round")
+
 for _, w in ipairs(__warns) do fails[#fails + 1] = "WARN " .. w end
 if #fails == 0 then print("PASS net") else for _, f in ipairs(fails) do print("FAIL " .. f) end end

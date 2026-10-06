@@ -54,3 +54,53 @@ check(G.findAnimation({ "knife" }) ~= nil, "find anim substring")
 check(G.animationName("http://www.roblox.com/asset/?id=222") == "KnifeSwing", "anim by id")
 check(G.configNumber("maxSilenceDistance", 12) == 12, "config default")
 if #fails == 0 then print("PASS game_api") else for _, f in ipairs(fails) do print("FAIL " .. f) end end
+
+-- v2.1: require cuma untuk shared.configurations, tim via getTeamOfRole, tanpa role palsu
+do
+    local fails2 = {}
+    local function check2(c, m) if not c then fails2[#fails2 + 1] = m end end
+    local G2 = ctx.Game
+    local RS2 = ctx.ReplicatedStorage
+    local sharedF = RS2:FindFirstChild("shared")
+    local cfgF = sharedF:FindFirstChild("configurations")
+    local rolesM = cfgF:FindFirstChild("roles")
+    local teamsM = __mk("ModuleScript", { Name = "teamsConfig" }, cfgF)
+    local ctrl = RS2:FindFirstChild("Src"):FindFirstChild("client"):FindFirstChild("controllers"):FindFirstChild("roleController")
+    check2(G2.requireAllowed(rolesM) == true, "config module allowed")
+    check2(G2.requireAllowed(ctrl) == false, "client controller blocked")
+    local required = {}
+    require = function(m)
+        required[m] = true
+        if m == rolesM then
+            return {
+                mafia = { name = "Mafia" }, witch = { name = "Witch" }, jester = { name = "Jester" },
+                detective = { name = "Detective" }, civilian = { name = "Civilian" },
+            }
+        elseif m == teamsM then
+            return {
+                getTeamOfRole = function(r)
+                    local t = { mafia = "mafia", witch = "mafia", jester = "neutral", detective = "town", civilian = "town" }
+                    return t[r]
+                end,
+                teams = {
+                    veil = { name = "The Veil", roles = { "saboteur", "mirage" }, highlightTypes = { a = 1 } },
+                    mafia = { name = "Mafia", roles = { "mafia", "witch" }, chatChannel = "Mafia" },
+                },
+            }
+        end
+        error("should not be required")
+    end
+    G2.caps.require = true
+    local ok, res = pcall(G2.require, ctrl)
+    check2(required[ctrl] == nil, "controller never required")
+    local map = G2.roles(true)
+    check2(G2.rolesFromConfig == true, "roles from config")
+    check2(G2.teamOf("Witch") == "EVIL", "witch team via getTeamOfRole")
+    check2(G2.teamOf("Jester") == "NEUTRAL", "jester neutral: " .. tostring(G2.teamOf("Jester")))
+    check2(G2.teamOf("Saboteur") == "VEIL", "saboteur via teams.veil.roles / fallback")
+    check2(map["the veil"] == nil and map["roles"] == nil and map["highlighttypes"] == nil and map["chatchannel"] == nil, "no bogus roles from teams config")
+    check2(G2.matchRole("these roles are confusing") == nil, "'roles' is not a role")
+    require = nil
+    G2.caps.require = false
+    if #fails2 == 0 then print("PASS game_api v2.1") else for _, f in ipairs(fails2) do print("FAIL " .. f) end end
+end
