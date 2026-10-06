@@ -1,0 +1,10 @@
+{
+  "name": "noctisenix-tests",
+  "private": true,
+  "type": "module",
+  "description": "Luau harness (luau-web) with Roblox mocks for NoctisENIX",
+  "dependencies": {
+    "luau-web": "1.4.0",
+    "luaparse": "0.3.1"
+  }
+}
