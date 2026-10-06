@@ -145,24 +145,31 @@ if dd then
     check(not still, "dropdown closed")
 end
 
--- 7. perbaikan kursor
+-- 7. perbaikan kursor (v2.2): MouseBehavior milik game TIDAK PERNAH disentuh
 UI.setVisible(true)
 uis.MouseIconEnabled = false
 uis.MouseBehavior = Enum.MouseBehavior.LockCenter
 __mouse = Vector2.new(5, 5)
 __runRenderBinds()
-check(uis.MouseIconEnabled == true, "mouse icon forced on while menu open")
-check(uis.MouseBehavior == Enum.MouseBehavior.Default, "mouse unlocked while menu open")
+check(uis.MouseIconEnabled == true, "mouse icon shown while hovering the window")
+check(uis.MouseBehavior == Enum.MouseBehavior.LockCenter, "MouseBehavior untouched (game keeps aiming control)")
+check(UI.modal.Visible == true, "Modal button frees the mouse while menu open")
 check(UI.halo.Visible == true, "halo over window")
 __mouse = Vector2.new(5000, 5000)
 __runRenderBinds()
 check(UI.halo.Visible == false, "no halo outside window")
+check(uis.MouseIconEnabled == false, "icon back to the game's value once the mouse leaves the window")
+-- game mengubah ikon sendiri saat kita nggak memaksa -> kita nggak menimpa
+uis.MouseIconEnabled = true
+__runRenderBinds()
+check(uis.MouseIconEnabled == true, "game's own icon state left alone")
+uis.MouseIconEnabled = false
 UI.lastCapture = -1
 press(Enum.KeyCode.RightShift)
 check(UI.main.Visible == false, "menu key hides")
 __runRenderBinds()
-check(uis.MouseIconEnabled == false, "game's mouse icon state restored on close")
-check(uis.MouseBehavior == Enum.MouseBehavior.LockCenter, "game's mouse behaviour restored on close")
+check(UI.modal.Visible == false, "Modal hidden with the menu (engine re-locks the mouse)")
+check(uis.MouseBehavior == Enum.MouseBehavior.LockCenter and uis.MouseIconEnabled == false, "nothing restored over the game's state on close")
 press(Enum.KeyCode.RightShift)
 check(UI.main.Visible == true, "menu key shows again")
 

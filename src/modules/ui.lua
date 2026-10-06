@@ -1178,33 +1178,49 @@ return function(env)
     corner(dot, 3)
     UI.halo = halo
 
-    local cursor = { forced = false, savedIcon = nil, savedBehavior = nil }
+    -- v2.2: JANGAN pernah sentuh MouseBehavior. Game membidik stab / tembak lewat posisi kursor
+    -- (ScreenPointToRay); dulu waktu menu ditutup kita "memulihkan" MouseBehavior ke nilai lama
+    -- (snapshot saat script di-load, sering Default di lobby) sehingga mouse nggak terkunci lagi
+    -- dan tombol ability (T / G / R) nggak pernah kena target. Sekarang:
+    --   * mouse dilepas cuma lewat tombol Modal (engine yang mengunci lagi dengan benar),
+    --   * MouseIconEnabled dipaksa true HANYA saat mouse di atas window, lalu dikembalikan ke
+    --     nilai yang dibaca TEPAT sebelum dipaksa (bukan snapshot lama).
+    local cursor = { forcing = false, savedIcon = nil }
 
     local function overWindow(m)
         local p, s = main.AbsolutePosition, main.AbsoluteSize
         return m.X >= p.X and m.X <= p.X + s.X and m.Y >= p.Y and m.Y <= p.Y + s.Y
     end
 
+    local function releaseIcon()
+        if cursor.forcing then
+            cursor.forcing = false
+            local icon = cursor.savedIcon
+            cursor.savedIcon = nil
+            if icon ~= nil then
+                pcall(function()
+                    UserInputService.MouseIconEnabled = icon
+                end)
+            end
+        end
+    end
+
     function UI.cursorStep()
         local visible = S.alive and main.Visible
+        UI.modal.Visible = visible and S.freeMouse ~= false
         local okM, m = pcall(UserInputService.GetMouseLocation, UserInputService)
         local over = visible and okM and m and overWindow(m) or false
-        if visible and S.freeMouse ~= false then
-            if not cursor.forced then
-                cursor.forced = true
+        if over then
+            if not cursor.forcing then
+                cursor.forcing = true
                 cursor.savedIcon = UserInputService.MouseIconEnabled
-                cursor.savedBehavior = UserInputService.MouseBehavior
             end
             if UserInputService.MouseIconEnabled ~= true then
                 UserInputService.MouseIconEnabled = true
             end
-            if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
-                UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-            end
-        elseif cursor.forced then
-            UI.restoreCursor()
+        else
+            releaseIcon()
         end
-        UI.modal.Visible = visible and S.freeMouse ~= false
         halo.Visible = over and S.cursorHalo ~= false
         if halo.Visible then
             halo.Position = UDim2.fromOffset(m.X, m.Y)
@@ -1212,18 +1228,9 @@ return function(env)
     end
 
     function UI.restoreCursor()
-        if cursor.forced then
-            pcall(function()
-                if cursor.savedIcon ~= nil then
-                    UserInputService.MouseIconEnabled = cursor.savedIcon
-                end
-                if cursor.savedBehavior ~= nil then
-                    UserInputService.MouseBehavior = cursor.savedBehavior
-                end
-            end)
-        end
-        cursor.forced = false
+        releaseIcon()
         halo.Visible = false
+        UI.modal.Visible = false
     end
 
     -- BindToRenderStep dengan prioritas paling akhir supaya jalan SETELAH cursorController game.
