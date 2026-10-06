@@ -117,6 +117,21 @@ for _, d in ipairs(all()) do
 end
 check(foundBob, "Roles tab lists Bob as Mafia")
 
+-- 6b. Jaringan game -> Intel -> ESP / Roles
+local cara
+for _, p in ipairs(__players) do if p.Name == "Cara" then cara = p end end
+rawget(__world.revealRoles, "_signals").OnClientEvent:Fire({ [cara] = "Witch" })
+check(Intel.info(cara).role == "Witch", "revealRoles -> Intel: " .. tostring(Intel.info(cara).role))
+ESP.step()
+local co = ESP.objs[cara]
+check(co ~= nil and string.find(co.tx.Text, "[WITCH]", 1, true) ~= nil and string.find(co.tx.Text, "EVIL TEAM", 1, true) ~= nil, "ESP shows network-revealed Witch: " .. (co and co.tx.Text or "nil"))
+__world.responses[__world.roleRF] = function() return "Detainer" end
+Net.reset()
+Net.step()
+hb:Fire(0.3)
+local sr, st = Intel.self()
+check(sr == "Detainer" and st == "TOWN", "server role -> self: " .. tostring(sr) .. "/" .. tostring(st))
+
 -- 7. Unload bersih
 click(control("Unload NoctisENIX", "Action"))
 check(S.alive == false and #Janitor == 0, "unloaded cleanly")

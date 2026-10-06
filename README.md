@@ -1,6 +1,6 @@
 # NoctisENIX
 
-Script Roblox untuk **MAFIA [V2.3] - ACT II** (Topline Studios Inc). Satu file, tanpa library eksternal, tanpa Drawing API, dan semua fungsi khusus executor dijaga pengecekan nil supaya aman di **Xeno**.
+Script Roblox untuk **MAFIA [V2.3] - ACT II** (Topline Studios Inc), ditargetkan untuk executor **Xeno**. Tanpa library eksternal, tanpa Drawing API, tanpa request keluar. Semua fungsi khusus executor dicek dulu dan dibungkus `pcall`; fitur yang butuh fungsi yang tidak ada di Xeno akan mati sendiri tanpa merusak fitur lain.
 
 ## Cara pakai
 
@@ -8,43 +8,64 @@ Script Roblox untuk **MAFIA [V2.3] - ACT II** (Topline Studios Inc). Satu file, 
 loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claude/roblox-mafia-noctissenix-1t79fn/NoctisENIX.lua"))()
 ```
 
-Setelah branch di-merge, ganti segmen `claude/roblox-mafia-noctissenix-1t79fn` dengan `main`. Kalau repo berstatus private, raw URL akan 404. Jadikan repo public, atau paste isi `NoctisENIX.lua` langsung ke executor.
+Menu: **RightShift** (bisa diganti di Settings). Eksekusi ulang otomatis meng-unload instance lama.
 
-Menu dibuka atau ditutup dengan **RightShift** (bisa diganti di tab Settings). Eksekusi ulang otomatis meng-unload instance lama.
+## Inspector (buat kalibrasi)
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claude/roblox-mafia-noctissenix-1t79fn/NoctisENIX_Inspector.lua"))()
+```
+
+1. Jalankan **saat sudah di dalam match**, lalu tekan **Snapshot**. Section **GAME NETWORK** memanggil getter baca-saja milik game (role, teamMembers, gamePhase, dan sejenisnya) untuk melihat format balasannya. Remote aksi seperti `onStab` tidak pernah dipanggil Inspector.
+2. Tekan **Start live log**, lalu main satu ronde penuh: malam, ada yang ditusuk, ada yang di-heal, meeting, voting. Kalau bisa, sekali jadi Mafia dan sekali jadi role lain.
+3. Tekan **Save**. Hasilnya tersimpan di folder `workspace/NoctisENIX/` milik Xeno (dan ikut tersalin ke clipboard).
+4. Kirim file `.txt` itu. Isinya struktur modul game, config role, attribute, animasi, remote, dan log kejadian selama ronde, jadi deteksi role dan fitur aksi bisa dicocokkan dengan nama-nama asli game.
 
 ## Fitur
 
 | Tab | Isi |
 | --- | --- |
-| ESP | Highlight dan name tag berwarna sesuai role (merah Mafia, biru Detective, hijau Doctor), jarak, HP, notifikasi saat role terdeteksi, memori role |
-| Player | Walk speed, jump power, infinite jump, noclip, fly, custom FOV |
-| Players | Daftar pemain beserta role, tombol teleport dan spectate |
-| World | Fullbright, no fog, instant interact (hold = 0), anti AFK |
-| Dev Tools | Scan remote, dump info pemain, remote logger (FireServer / InvokeServer), semuanya bisa di-copy ke clipboard |
-| Settings | Ganti toggle key, cek game, rejoin, unload |
+| ESP | Highlight warna tim (merah Evil, emas Veil, hijau Town), baris `EVIL TEAM` / nama / `[ROLE]`, nama asli di balik disguise, status DOWNED / DETAINED / SILENCED / IN LOCKER, jarak, HP |
+| Roles | Role kamu, daftar role yang sudah ketahuan beserta alasannya, kill feed dan log bukti, notifikasi role, alert saat ada yang vote kamu, reset ronde |
+| Deception | Fake crawl, fake stab, fake gunshot, ghost (semuanya bisa diberi keybind) |
+| Teleport | Pilih target, ke target / ke yang downed / ke yang detained, Teleport-Stab-Return (Mafia), Bring target, Teleport-Heal-Return (Doctor) |
+| Player | Walk speed, jump power, infinite jump, noclip, fly, FOV |
+| Players | Daftar pemain + role, tombol target, teleport, spectate |
+| World | Fullbright, no fog, instant interact, anti AFK |
+| Dev Tools | Scan remote, dump pemain, remote logger |
+| Settings | Toggle key, cek game, rejoin, unload |
 
 ## Cara kerja deteksi role
 
-Role pemain lain tidak selalu dikirim ke client oleh game, jadi script membaca sinyal yang memang terlihat, dengan urutan berikut:
+Game ini **tidak menyimpan role pemain lain di client**. Dump attribute dari game asli mengonfirmasi hal itu: yang ada cuma `DisguiseName`, status seperti `Downed`, dan attribute `<Role>Boosters` (booster peluang dapat role, **bukan** role yang sedang dipegang, jadi sengaja diabaikan). Karena itu role dikumpulkan dari beberapa sumber, dengan tingkat keyakinan `confirmed`, `likely` (`?`), dan `suspect` (`??`):
 
-1. Attribute (`Role`, `Team`, dst) di Player atau Character
-2. Value object bernama `Role` di Player atau Character
-3. Nama Team
-4. Tool yang sedang dipegang (pisau, pistol, suntik, dst). Backpack pemain lain tidak terlihat dari client, jadi tool baru terbaca saat di-equip.
+* **Jaringan game** (`ReplicatedStorage.ServiceNetworks` dan `RoleNetworks`):
+  * Role kamu sendiri dari `roleService.role`, plus `getRoleNetwork`.
+  * Rekan setim dari `teamService.teamMembers` dan `teamMembers` milik role Evil (Mafia, Witch, Bodyguard).
+  * Pengungkapan role dari `gameService.revealRoles`, cutscene kematian, `chatService.onSystemMessage`, dan `announcementService.show`.
+  * Fase dari `gameService.gamePhase` dan `setTopbarText`.
+* **Bukti aksi**: animasi tusuk atau tembak saat malam (Mafia), tembakan siang (Vigilante), korban kena silence (Witch), pintu dikunci atau banana (Saboteur), pintu dibuka atau bersih-bersih (Janitor), korban bangun dari downed atau sembuh dari racun (Doctor). Kalau ada beberapa kandidat, kandidat dipersempit dari kejadian ke kejadian.
+* **Pengumuman sistem**, termasuk alur tebakan Harbinger.
 
-Role yang sudah terdeteksi disimpan (latch) sampai karakter respawn atau tombol **Clear role memory** ditekan. Daftar kata kunci ada di `Config.Roles` pada bagian atas file dan bisa diedit.
+Role yang dikenali: Mafia, Witch, Bodyguard (Evil), Saboteur, Mirage (Veil), Detective, Doctor, Vigilante, Janitor, Detainer (Town), serta Poisoner, Phantom, Harbinger, Judge, Suppressor, Jester, dan Snow Spirit (tim dibaca dari config game kalau bisa).
 
-## Kalibrasi di map asli
+Bentuk argumen remote (misalnya apa yang dikirim `revealRoles`, atau argumen `onStab`) belum terlihat langsung, jadi parser-nya dibuat toleran terhadap beberapa bentuk. Hasil Inspector (section **GAME NETWORK** dan live log) dipakai untuk mengunci format pastinya.
 
-Nama tool dan struktur role di map ini belum bisa diperiksa dari luar game. Kalau ada pemain yang role-nya tidak terbaca:
+## Struktur repo
 
-1. Masuk match, buka tab **Dev Tools**.
-2. Tekan **Dump all players** dan **Scan remotes**, hasilnya otomatis masuk clipboard.
-3. Aktifkan **Log remote calls**, lakukan aksi di game (vote, pakai skill), lalu **Copy remote log**.
-4. Dari hasil itu kata kunci role dan fitur yang menembak remote bisa disesuaikan.
+```
+src/main.lua            UI, ESP, movement, wiring
+src/modules/*.lua       ui (library UI), game_api (akses internal game), net (jaringan game),
+                        intel (deteksi role), actions (deception + teleport)
+src/inspector.lua       Inspector
+tools/build.py          rakit src/ jadi NoctisENIX.lua dan NoctisENIX_Inspector.lua
+tests/                  harness Luau (luau-web) dengan mock Roblox
+```
+
+Setelah mengubah `src/`: `python3 tools/build.py`, lalu jalankan tes di `tests/` (lihat `tests/README.md`).
 
 ## Catatan keamanan dan risiko
 
-* Script referensi `04Jordn/SUMMIT` di-obfuscate dengan Luraph V15, jadi isinya tidak bisa diaudit dan tidak dipakai sebagai dasar kode. NoctisENIX ditulis dari nol dan seluruh kodenya terbaca.
-* Script ini tidak melakukan request jaringan keluar. Satu-satunya pemanggilan layanan Roblox di luar gameplay adalah `MarketplaceService:GetProductInfo` untuk mengecek nama game.
-* Menjalankan script di executor melanggar Terms of Use Roblox dan berisiko akun terkena ban. Pakai akun alt.
+* Script referensi `04Jordn/SUMMIT` di-obfuscate (Luraph). Kode NoctisENIX tidak diambil dari sana. Yang dipakai hanya nama-nama internal game yang terbaca dari tabel konstantanya, dan semua nama itu tetap dicek ulang saat runtime.
+* NoctisENIX tidak melakukan request jaringan keluar. Inspector hanya menulis file lokal di folder workspace executor.
+* Fitur seperti ghost dan teleport bisa dideteksi server game. Menjalankan script di executor melanggar Terms of Use Roblox dan berisiko akun terkena ban. Pakai akun alt.
