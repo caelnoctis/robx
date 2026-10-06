@@ -270,8 +270,23 @@ return function(ctx)
         return nil
     end
 
+    -- Sumber fase tambahan (mis. Net module: remote gameService.gamePhase / setTopbarText).
+    G.phaseProviders = {}
+    function G.addPhaseProvider(fn)
+        G.phaseProviders[#G.phaseProviders + 1] = fn
+    end
+
     function G.phase()
         local v = G.globalAttr("gamePhase")
+        if v == nil then
+            for _, fn in ipairs(G.phaseProviders) do
+                local ok, r = pcall(fn)
+                if ok and r ~= nil then
+                    v = r
+                    break
+                end
+            end
+        end
         if v == nil then
             return nil
         end
@@ -368,9 +383,10 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Config role / tim (dibaca dari modul game kalau bisa di-require)
     ------------------------------------------------------------------
+    -- Tim cadangan kalau config game nggak bisa di-require. Mafia, Witch, Bodyguard punya remote
+    -- teamMembers + nightVision (sisi Evil). Janitor menangkal Saboteur (unlock, anti-banana) jadi Town.
     local FALLBACK_TEAMS = {
         mafia = "EVIL",
-        janitor = "EVIL",
         witch = "EVIL",
         bodyguard = "EVIL",
         saboteur = "VEIL",
@@ -378,8 +394,15 @@ return function(ctx)
         detective = "TOWN",
         doctor = "TOWN",
         vigilante = "TOWN",
+        janitor = "TOWN",
+        detainer = "TOWN",
     }
-    local FALLBACK_ROLES = { "Mafia", "Janitor", "Witch", "Bodyguard", "Saboteur", "Mirage", "Harbinger", "Detective", "Doctor", "Vigilante" }
+    local FALLBACK_ROLES = {
+        "Mafia", "Witch", "Bodyguard", "Saboteur", "Mirage", "Poisoner", "Phantom", "Harbinger",
+        "Detective", "Doctor", "Vigilante", "Janitor", "Detainer", "Judge", "Suppressor", "Jester", "Snow Spirit",
+    }
+    -- Nama folder RoleNetworks -> nama role.
+    local ROLE_ALIASES = { snowspirit = "snow spirit" }
 
     local TEAM_ALIASES = {
         evil = "EVIL", mafia = "EVIL",
@@ -404,12 +427,13 @@ return function(ctx)
             return
         end
         local key = string.lower(name)
+        key = ROLE_ALIASES[key] or key
         local entry = map[key]
         if not entry then
             entry = { name = name }
             map[key] = entry
         end
-        entry.team = entry.team or G.normalizeTeam(team) or FALLBACK_TEAMS[key]
+        entry.team = entry.team or G.normalizeTeam(team) or FALLBACK_TEAMS[key] or FALLBACK_TEAMS[string.gsub(key, " ", "")]
     end
 
     local function teamField(t)
@@ -486,6 +510,11 @@ return function(ctx)
         for _, n in ipairs(FALLBACK_ROLES) do
             addRole(map, n, nil)
         end
+        for alias, key in pairs(ROLE_ALIASES) do
+            if map[key] and not map[alias] then
+                map[alias] = map[key]
+            end
+        end
         roleInfo, roleInfoAt = map, now()
         G.rolesFromConfig = rolesCfg ~= nil
         return map
@@ -518,8 +547,9 @@ return function(ctx)
         if not roleName then
             return nil
         end
-        local e = G.roles(false)[string.lower(roleName)]
-        return e and e.team or FALLBACK_TEAMS[string.lower(roleName)]
+        local key = string.lower(roleName)
+        local e = G.roles(false)[ROLE_ALIASES[key] or key]
+        return e and e.team or FALLBACK_TEAMS[key] or FALLBACK_TEAMS[string.gsub(key, " ", "")]
     end
 
     function G.gameConfig()

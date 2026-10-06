@@ -45,15 +45,8 @@ end
 check(Intel ~= nil and type(Intel.info) == "function", "real Intel loaded")
 check(Actions ~= nil and type(Actions.tpStabReturn) == "function", "real Actions loaded")
 
--- Dunia game palsu: animasi dan fase malam.
-local RS = __services.ReplicatedStorage
-local assets = __mk("Folder", { Name = "assets" }, RS)
-local anims = __mk("Folder", { Name = "animations" }, assets)
-local p1 = __mk("Folder", { Name = "player1" }, anims)
-local knifeAnim = __mk("Animation", { Name = "KnifeSwing", AnimationId = "rbxassetid://222" }, p1)
-__mk("Animation", { Name = "gunShot", AnimationId = "rbxassetid://333" }, p1)
-__mk("Animation", { Name = "Wounded Crawling", AnimationId = "rbxassetid://111" }, p1)
-__mk("Animation", { Name = "Wounded Idle", AnimationId = "rbxassetid://112" }, p1)
+-- Aset & jaringan dibuat di smoke_world.lua (sebelum script dimuat).
+local knifeAnim = __world.knifeAnim
 Game.scanAnimations(true)
 workspace:SetAttribute("gamePhase", "Night")
 

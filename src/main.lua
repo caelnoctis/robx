@@ -296,12 +296,31 @@ local Intel = (function()
 --@@INCLUDE modules/intel.lua@@
 end)()(ctx)
 
+local Net = (function()
+--@@INCLUDE modules/net.lua@@
+end)()(ctx)
+ctx.Net = Net
+
 ctx.selfRole = function()
     local ok, role, team = pcall(Intel.self)
-    if ok then
+    if ok and role then
         return role, team
     end
+    if Net.selfRole then
+        return Net.selfRole, Game.teamOf(Net.selfRole)
+    end
     return nil, nil
+end
+
+-- Bukti dari jaringan game (ServiceNetworks / RoleNetworks) diteruskan ke Intel.
+local function intelCall(name, ...)
+    local fn = Intel[name]
+    if type(fn) == "function" then
+        local ok, err = pcall(fn, ...)
+        if not ok then
+            warnf("Intel." .. name .. ": " .. tostring(err))
+        end
+    end
 end
 
 local Actions = (function()
@@ -1164,6 +1183,8 @@ end)
 
 -- Dev tools ----------------------------------------------------------
 UI.note(Pages.dev, "For a full calibration run <b>NoctisENIX Inspector</b> (separate loadstring, see README) during a match and send the saved file. These buttons are the quick version.")
+UI.section(Pages.dev, "Game network")
+local netFeed = UI.feed(Pages.dev, "Network hooks and recent events", 10, "Waiting for the game's network...")
 UI.section(Pages.dev, "Scanner")
 UI.button(Pages.dev, "Scan remotes", "Lists every RemoteEvent / RemoteFunction and copies them.", Dev.scanRemotes, { action = "Scan" })
 UI.button(Pages.dev, "Dump players", "Attributes, tools, values and current intel for everyone.", Dev.dumpAllPlayers, { action = "Dump" })
@@ -1285,10 +1306,25 @@ local function refreshUi()
         targetDropdown.SetLabel(targetLabel(target))
     end
 
+    local hooks, nHooks = {}, 0
+    for k, v in pairs(Net.found or {}) do
+        if v then
+            nHooks = nHooks + 1
+            hooks[#hooks + 1] = k
+        end
+    end
+    table.sort(hooks)
     statusFeed.Set({
         { text = "Game: " .. esc(Status.game) },
         { text = "Config: " .. esc(Status.config) },
+        { text = "Network: " .. nHooks .. " hooks" .. (Net.selfRole and ("  |  server says you are " .. esc(Net.selfRole)) or "") },
     })
+    local netItems = { { text = "Hooks: " .. (#hooks > 0 and esc(table.concat(hooks, ", ")) or "none found"), color = nHooks > 0 and Theme.Good or Theme.Warn } }
+    local log = Net.log or {}
+    for i = #log, math.max(1, #log - 8), -1 do
+        netItems[#netItems + 1] = { text = esc(log[i]) }
+    end
+    netFeed.Set(netItems)
 end
 
 ----------------------------------------------------------------------
@@ -1313,6 +1349,25 @@ connect(LocalPlayer.CharacterAdded, function()
 end)
 
 safe(Intel.start)
+safe(Net.start, {
+    role = function(p, role, conf, why)
+        intelCall("addEvidence", p, role, conf, why)
+    end,
+    team = function(p, team, conf, why)
+        intelCall("addTeam", p, team, conf, why)
+    end,
+    self = function(role, why)
+        intelCall("addEvidence", LocalPlayer, role, "confirmed", why, true)
+    end,
+    message = function(text, source)
+        intelCall("ingestMessage", text, source)
+    end,
+    teammate = function(p, team, why)
+        if team then
+            intelCall("addTeam", p, team, "confirmed", why)
+        end
+    end,
+})
 
 local acc = { intel = 0, esp = 0, ui = 0 }
 connect(RunService.Heartbeat, function(dt)
@@ -1326,6 +1381,7 @@ connect(RunService.Heartbeat, function(dt)
     if acc.intel >= 0.25 then
         acc.intel = 0
         safeOnce(Intel.step)
+        safeOnce(Net.step)
     end
     acc.esp = acc.esp + dt
     if acc.esp >= 0.1 then
@@ -1425,7 +1481,7 @@ Unload = function()
     end
 end
 
-genv.NoctisENIX = { Version = Config.Version, Unload = Unload, Intel = Intel, Actions = Actions, Game = Game, UI = UI }
+genv.NoctisENIX = { Version = Config.Version, Unload = Unload, Intel = Intel, Actions = Actions, Game = Game, Net = Net, UI = UI }
 
 UI.selectTab(UI.tabs[1])
 
