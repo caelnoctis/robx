@@ -27,8 +27,9 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 
 | Tab | Isi |
 | --- | --- |
-| ESP | Highlight warna tim (merah Evil, emas Veil, hijau Town, ungu Neutral, abu-abu = belum pasti), baris `EVIL TEAM` / **nama karakter in-game** / `[ROLE]` dengan **warna role asli game** (@username Roblox opsional), status DOWNED / DETAINED / SILENCED / IN LOCKER, jarak, HP. Default cuma role yang **pasti**; tebakan bisa dinyalakan lewat "Show guesses too" |
-| Roles | Role kamu, daftar role yang sudah ketahuan beserta alasannya, kill feed dan log bukti, notifikasi role, alert saat ada yang vote kamu, reset ronde |
+| ESP | Highlight warna tim (merah Evil, emas Veil, hijau Town, ungu Neutral, abu-abu = belum pasti), baris `EVIL TEAM` / **nama karakter in-game** / `[ROLE]` dengan **warna role asli game** (@username Roblox opsional), status DOWNED / DETAINED / SILENCED / IN LOCKER, jarak, HP. Teks langsung di atas kepala tanpa kotak gelap (kotaknya bisa dinyalakan lagi lewat "Text background"). Default cuma role yang **pasti**; tebakan bisa dinyalakan lewat "Show guesses too" |
+| Votes (di tab Visuals) | **Vote tags**: `VOTES → nama` di atas kepala pemilih dan `N VOTES` di atas orang yang di-vote. **Vote lasers**: garis tembus tembok dari tangan pemilih ke orang yang dia vote, merah kalau yang di-vote itu kamu. Jalan walaupun ESP mati |
+| Roles | Role kamu, daftar **siapa vote siapa** + tally (hasil voting terakhir tetap tampil 2 menit), daftar role yang sudah ketahuan beserta alasannya, kill feed dan log bukti, notifikasi role, alert saat ada yang vote kamu, reset ronde |
 | Deception | Fake crawl, fake stab (`KnifeSwing`), fake gunshot (`Glock`), ghost, **Escape meeting seat**, **Stand on the table** (semuanya bisa diberi keybind) |
 | Teleport | Pilih target, ke target / ke yang downed / ke yang detained, Teleport-Stab-Return (Mafia), Bring target, Teleport-Heal-Return (Doctor) |
 | Player | Walk speed, jump power, infinite jump, noclip, fly, FOV |
@@ -51,6 +52,17 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 * Kalau keybind NoctisENIX dipasang di tombol yang sama dengan ability game, muncul peringatan, karena sekali tekan dua-duanya jalan.
 * Game punya tombol **Free cursor** sendiri (bawaan **P**). Kalau kursor kekunci di luar menu, tombol itu yang melepasnya.
 * Warna role di ESP diambil dari `roleColorsConfig` game, jadi persis sama dengan warna di UI game.
+
+## Cara kerja Vote ESP (v2.4)
+
+Data vote diambil dari jaringan game, semuanya cuma dibaca:
+
+* `pointingService.updateArmPointing`: event dari server yang menggerakkan lengan / "laser" tiap pemain ke orang yang dia vote.
+* `gameService.talliedVotes`: getter tally yang juga dipakai client game untuk tanda vote di atas kepala. Di-poll tiap 2,5 detik selama voting.
+* `gameService.votePlayer`, kalau server menyiarkannya.
+* Attribute `talliedVotes` / `playerVotes` sebagai cadangan.
+
+Kalau beberapa sumber bertentangan, tally dari server yang dipakai. Isi payload `updateArmPointing` belum pernah terekam (yang terekam cuma jumlahnya), jadi parser-nya menerima beberapa bentuk: pemain, karakter, part tubuh, UserId, posisi, atau tabel. Kalau ada vote yang nggak muncul, jalankan Inspector dengan **Start live log** selama satu voting lalu kirim hasilnya. Baris `REMOTE_IN ... updateArmPointing (...)` di situ menunjukkan bentuk aslinya.
 
 ## Cara kerja deteksi role
 

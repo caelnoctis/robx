@@ -646,6 +646,7 @@ return function(ctx)
         end
         return false
     end
+    Net.listen = listen
 
     function Net.start(h)
         hooks = h or {}

@@ -61,6 +61,14 @@ if ao then
     S.espRealName = false
     check(string.find(ao.tx.Text, "DOWNED", 1, true) ~= nil, "status tag")
     check(ao.stroke.Color == TeamColors.EVIL, "panel stroke team color")
+    -- v2.4: teks langsung di kepala, tanpa kotak gelap (bisa dinyalakan lagi)
+    check(ao.tx.BackgroundTransparency == 1 and ao.stroke.Enabled == false, "no text background by default")
+    check(ao.tx.TextStrokeTransparency < 0.5, "outlined text stays readable")
+    S.espPanel = true
+    ESP.step()
+    check(ao.tx.BackgroundTransparency < 1 and ao.stroke.Enabled == true, "text background can be turned back on")
+    S.espPanel = false
+    ESP.step()
 end
 check(ESP.objs[__players[1]] == nil, "no ESP on self")
 
@@ -88,6 +96,42 @@ refreshUi()
 check(ao and string.find(ao.tx.Text, '<font color="#' , 1, true) ~= nil and string.find(ao.tx.Text, "[MAFIA]", 1, true) ~= nil, "role tag colored")
 check(ao and string.find(ao.tx.Text, string.format('<font color="%s">[MAFIA', hex(TeamColors.EVIL)), 1, true) == nil, "role tag uses the game's role color, not the team color")
 check(PlayerRows.rows[alice] and PlayerRows.rows[alice].role.Text == "MAFIA", "player row role chip")
+
+-- 2b. Vote ESP: tag pemilih, jumlah suara, laser, daftar di tab Roles (v2.4)
+do
+    local bob, cara
+    for _, p in ipairs(__players) do if p.Name == "Bob" then bob = p elseif p.Name == "Cara" then cara = p end end
+    clearToasts()
+    Votes.onPointing(alice, bob)
+    Votes.onPointing(cara, bob)
+    ESP.step()
+    local bo = ESP.objs[bob]
+    check(ao and string.find(ao.tx.Text, "VOTES → " .. charName(bob), 1, true) ~= nil, "voter tag: " .. (ao and ao.tx.Text or "nil"))
+    check(bo and string.find(bo.tx.Text, "2 VOTES", 1, true) ~= nil, "vote count on target: " .. (bo and bo.tx.Text or "nil"))
+    check(ao and ao.laser and ao.laser.Visible == true and ao.laser.Length > 1 and ao.laser.Color3 == VOTE_COLOR, "laser from voter to target")
+    check(ao and ao.laser and ao.laser.AlwaysOnTop == true and ao.laser.Adornee ~= nil, "laser drawn through walls")
+    Votes.onPointing(bob, __players[1])
+    ESP.step()
+    check(bo and bo.laser and bo.laser.Color3 == VOTE_ME_COLOR, "red laser when someone votes you")
+    check(bo and string.find(bo.tx.Text, "VOTES → YOU", 1, true) ~= nil, "tag says YOU")
+    check(toastHas("is voting for you"), "toast when voted")
+    refreshUi()
+    check(anyLabel("→  <b>You</b>") and anyLabel("Tally:"), "Roles tab lists votes and tally")
+    -- ESP mati: tag vote tetap ada, highlight dan tag role nggak
+    S.esp = false
+    ESP.step()
+    check(ao.bb.Enabled == true and string.find(ao.tx.Text, "VOTES", 1, true) ~= nil, "vote tags work with ESP off")
+    check(ao.hl.Enabled == false and string.find(ao.tx.Text, "EVIL TEAM", 1, true) == nil, "only vote info without ESP")
+    S.voteLasers = false
+    ESP.step()
+    check(ao.laser.Visible == false, "laser toggle off")
+    S.voteLasers = true
+    Votes.reset()
+    ESP.step()
+    check(ao.laser.Visible == false and ao.bb.Enabled == false, "nothing shown without votes and ESP off")
+    S.esp = true
+    ESP.step()
+end
 
 -- 3. klik semua toggle & action (lewati yang berbahaya)
 local skipCards = { ["Card_Unload NoctisENIX"] = true, ["Card_Rejoin server"] = true }

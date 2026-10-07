@@ -32,7 +32,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.3.1",
+    Version = "2.4.0",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -158,6 +158,9 @@ local S = {
     espDistance = true,
     espHealth = false,
     espRealName = false, -- false = cuma nama karakter in-game (DisguiseName), tanpa @username
+    espPanel = false, -- false = teks langsung di atas kepala tanpa kotak gelap
+    voteEsp = true, -- tag "-> target" / jumlah vote di atas kepala
+    voteLasers = true, -- garis dari tangan pemilih ke orang yang dia vote
     notifyRoles = true,
     voteAlert = true,
     showGuesses = false, -- false = cuma role / tim yang PASTI yang ditampilkan
@@ -368,6 +371,14 @@ local function infoTeam(info)
     return info.team or (info.role and Game.teamOf(info.role)) or nil
 end
 
+ctx.Intel = Intel
+ctx.nameOf = function(p)
+    return charName(p)
+end
+local Votes = (function()
+--@@INCLUDE modules/votes.lua@@
+end)()(ctx)
+
 -- Warna role persis dari game (roleColorsConfig), dicerahkan kalau terlalu gelap untuk panel ESP.
 local function roleTint(role, fallback)
     local ok, c = pcall(Game.roleColor, role)
@@ -412,12 +423,13 @@ function ESP.ensure(player)
         Size = UDim2.new(0, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.XY,
         BackgroundColor3 = Color3.fromRGB(10, 9, 16),
-        BackgroundTransparency = 0.3,
+        BackgroundTransparency = S.espPanel and 0.3 or 1,
         BorderSizePixel = 0,
         Font = Enum.Font.GothamBold,
         TextSize = 13,
         RichText = true,
-        TextStrokeTransparency = 0.7,
+        TextStrokeColor3 = Color3.new(0, 0, 0),
+        TextStrokeTransparency = 0.25,
         TextColor3 = Color3.new(1, 1, 1),
         TextXAlignment = Enum.TextXAlignment.Center,
     }, o.bb)
@@ -432,6 +444,7 @@ function ESP.ensure(player)
         Thickness = 1,
         Transparency = 0.35,
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        Enabled = S.espPanel,
     }, o.tx)
     ESP.objs[player] = o
     return o
@@ -442,7 +455,17 @@ function ESP.remove(player)
     if o then
         o.hl:Destroy()
         o.bb:Destroy()
+        if o.laser then
+            o.laser:Destroy()
+        end
         ESP.objs[player] = nil
+    end
+end
+
+local function hideLaser(o)
+    if o.laser then
+        o.laser.Visible = false
+        o.laser.Adornee = nil
     end
 end
 
@@ -453,7 +476,54 @@ function ESP.hide(player)
         o.hl.Adornee = nil
         o.bb.Enabled = false
         o.bb.Adornee = nil
+        hideLaser(o)
     end
+end
+
+-- Laser vote: LineHandleAdornment dengan Adornee = Terrain (CFrame-nya identitas, jadi CFrame garis
+-- = koordinat dunia). AlwaysOnTop supaya kelihatan tembus tembok seperti ESP lainnya.
+local VOTE_COLOR = Color3.fromRGB(255, 159, 67)
+local VOTE_ME_COLOR = Color3.fromRGB(255, 70, 80)
+
+local function handPos(char)
+    local hand = char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm") or char:FindFirstChild("RightLowerArm")
+    if hand then
+        return hand.Position
+    end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    return root and (root.Position + Vector3.new(0, 1, 0)) or nil
+end
+
+local function chestPos(char)
+    local t = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or char:FindFirstChild("HumanoidRootPart")
+    return t and t.Position or nil
+end
+
+function ESP.laserStep(o, char, target)
+    local tchar = target and target.Character
+    local from = char and handPos(char)
+    local to = tchar and chestPos(tchar)
+    local terrain = workspace:FindFirstChildOfClass("Terrain")
+    if not (from and to and terrain) or (to - from).Magnitude < 0.5 then
+        hideLaser(o)
+        return
+    end
+    if not o.laser then
+        o.laser = new("LineHandleAdornment", {
+            Name = "Laser",
+            AlwaysOnTop = true,
+            ZIndex = 5,
+            Thickness = 3,
+            Transparency = 0.15,
+            Visible = false,
+        }, espFolder)
+    end
+    local l = o.laser
+    l.Adornee = terrain
+    l.CFrame = CFrame.lookAt(from, to)
+    l.Length = (to - from).Magnitude
+    l.Color3 = target == LocalPlayer and VOTE_ME_COLOR or VOTE_COLOR
+    l.Visible = true
 end
 
 function ESP.clear()
@@ -487,6 +557,11 @@ function ESP.step()
     local myRoot = getRoot(LocalPlayer)
     local origin = (myRoot and myRoot.Position) or (cam and cam.CFrame.Position)
     local blink = (os.clock() % 0.8) < 0.4
+    local voteCounts = {}
+    if S.voteEsp then
+        local okC, c = pcall(Votes.counts)
+        voteCounts = okC and c or {}
+    end
 
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer then
@@ -494,8 +569,11 @@ function ESP.step()
             local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
             local head = char and char:FindFirstChild("Head")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local voteTarget = S.voteEsp and Votes.targetOf(p) or nil
+            local voteCount = S.voteEsp and voteCounts[p] or nil
+            local hasVote = voteTarget ~= nil or (voteCount and voteCount > 0)
 
-            if S.esp and char and root and hum and hum.Health > 0 then
+            if (S.esp or hasVote) and char and root and hum and hum.Health > 0 then
                 local info = intelInfo(p)
                 local status = info.status
                 local team = infoTeam(info)
@@ -506,20 +584,26 @@ function ESP.step()
                 o.hl.FillColor = color
                 o.hl.OutlineColor = color
                 o.hl.FillTransparency = (status.downed and blink) and 0.25 or 0.7
-                o.hl.Enabled = S.espHighlight
+                o.hl.Enabled = S.esp and S.espHighlight
+                o.tx.BackgroundTransparency = S.espPanel and 0.3 or 1
+                o.stroke.Enabled = S.espPanel
 
                 local lines = {}
-                if S.espRoles and team then
+                if not S.esp then
+                    -- Cuma Vote ESP: nama + vote saja.
+                    lines[#lines + 1] = esc(charName(p, info))
+                end
+                if S.esp and S.espRoles and team then
                     lines[#lines + 1] = string.format('<font color="%s" size="10">%s TEAM</font>', hex(color), team)
                 end
-                if S.espNames then
+                if S.esp and S.espNames then
                     local name = esc(charName(p, info))
                     if S.espRealName then
                         name = name .. ' <font size="10" color="#BBBBCC">@' .. esc(p.Name) .. "</font>"
                     end
                     lines[#lines + 1] = name
                 end
-                if S.espRoles and info.role then
+                if S.esp and S.espRoles and info.role then
                     local mark = ""
                     if info.confidence == "likely" then
                         mark = " ?"
@@ -528,16 +612,23 @@ function ESP.step()
                     end
                     lines[#lines + 1] = string.format('<font color="%s">[%s%s]</font>', hex(roleTint(info.role, color)), esc(string.upper(info.role)), mark)
                 end
+                if voteTarget then
+                    local who = voteTarget == LocalPlayer and "YOU" or esc(charName(voteTarget))
+                    lines[#lines + 1] = string.format('<font color="%s">VOTES → %s</font>', hex(voteTarget == LocalPlayer and VOTE_ME_COLOR or VOTE_COLOR), who)
+                end
+                if voteCount and voteCount > 0 then
+                    lines[#lines + 1] = string.format('<font color="%s">%d VOTE%s</font>', hex(VOTE_COLOR), voteCount, voteCount == 1 and "" or "S")
+                end
                 local extra = {}
-                if S.espStatus then
+                if S.esp and S.espStatus then
                     for _, tag in ipairs(ESP.statusTags(status)) do
                         extra[#extra + 1] = '<font color="#FFB84E">' .. tag .. "</font>"
                     end
                 end
-                if S.espDistance and origin then
+                if S.esp and S.espDistance and origin then
                     extra[#extra + 1] = string.format("%dm", math.floor((root.Position - origin).Magnitude))
                 end
-                if S.espHealth then
+                if S.esp and S.espHealth then
                     extra[#extra + 1] = string.format("%dHP", math.floor(hum.Health))
                 end
                 if #extra > 0 then
@@ -548,6 +639,11 @@ function ESP.step()
                 o.bb.Enabled = #lines > 0
                 o.tx.Text = table.concat(lines, "\n")
                 o.stroke.Color = color
+                if voteTarget and S.voteLasers then
+                    ESP.laserStep(o, char, voteTarget)
+                else
+                    hideLaser(o)
+                end
             else
                 ESP.hide(p)
             end
@@ -1099,6 +1195,16 @@ end)
 UI.toggle(Pages.esp, "Health", nil, S.espHealth, function(v)
     S.espHealth = v
 end)
+UI.toggle(Pages.esp, "Text background", "Dark box behind the text. Off = plain outlined text right above the head.", S.espPanel, function(v)
+    S.espPanel = v
+end)
+UI.section(Pages.esp, "Votes")
+UI.toggle(Pages.esp, "Vote tags", "Shows who each player is voting for (VOTES → name) and how many votes each player has, above their head. Works even with ESP off.", S.voteEsp, function(v)
+    S.voteEsp = v
+end, { risk = "local" })
+UI.toggle(Pages.esp, "Vote lasers", "Draws a line through walls from each voter's hand to the player they vote for. Red = they are voting you.", S.voteLasers, function(v)
+    S.voteLasers = v
+end, { risk = "local" })
 
 -- Roles --------------------------------------------------------------
 UI.section(Pages.roles, "You")
@@ -1112,8 +1218,11 @@ UI.toggle(Pages.roles, "Alert when voted", "Warns you the moment someone votes f
 end)
 UI.button(Pages.roles, "Reset round evidence", "Clears everything learned this round. Happens automatically when a new round starts.", function()
     pcall(Intel.reset, "manual")
+    pcall(Votes.reset)
     notify("Roles", "Evidence cleared", nil, 2)
 end, { action = "Reset" })
+UI.section(Pages.roles, "Votes")
+local voteFeed = UI.feed(Pages.roles, "Who votes who", 16, "No votes yet. They show up during voting.")
 UI.section(Pages.roles, "Known roles")
 local knownFeed = UI.feed(Pages.roles, "Figured out so far", 16, "Nobody yet. Evidence shows up as things happen in the round.")
 UI.section(Pages.roles, "Kill feed and evidence")
@@ -1497,6 +1606,51 @@ local function refreshUi()
     end
     knownFeed.Set(known)
 
+    local voteItems = {}
+    local okV, vlist = pcall(Votes.list)
+    local okVC, vcounts = pcall(Votes.counts)
+    local shownLast = false
+    if okV and type(vlist) == "table" and #vlist == 0 and Votes.last and os.clock() - Votes.last.t < 120 then
+        vlist, vcounts, shownLast = Votes.last.list, Votes.last.counts, true
+        okVC = true
+    end
+    if okV and type(vlist) == "table" then
+        if shownLast then
+            voteItems[#voteItems + 1] = { text = "Last voting:", color = Theme.Muted }
+        end
+        if okVC and type(vcounts) == "table" then
+            local tally = {}
+            for target, n in pairs(vcounts) do
+                if target and n > 0 then
+                    tally[#tally + 1] = { target = target, n = n }
+                end
+            end
+            table.sort(tally, function(a, b)
+                return a.n > b.n
+            end)
+            local parts = {}
+            for i = 1, math.min(#tally, 6) do
+                local e = tally[i]
+                parts[#parts + 1] = "<b>" .. esc(e.target == LocalPlayer and "You" or charName(e.target)) .. "</b> " .. e.n
+            end
+            if #parts > 0 then
+                voteItems[#voteItems + 1] = { text = "Tally: " .. table.concat(parts, "   "), color = VOTE_COLOR }
+            end
+        end
+        for _, e in ipairs(vlist) do
+            if #voteItems >= 16 then
+                break
+            end
+            local me = e.target == LocalPlayer
+            voteItems[#voteItems + 1] = {
+                text = "<b>" .. esc(e.voter == LocalPlayer and "You" or charName(e.voter)) .. "</b>  →  <b>"
+                    .. esc(me and "You" or (e.target and charName(e.target) or "?")) .. '</b>  <font color="#8F89AA">(' .. esc(e.src) .. ")</font>",
+                color = me and VOTE_ME_COLOR or nil,
+            }
+        end
+    end
+    voteFeed.Set(voteItems)
+
     local okFeed, feed = pcall(Intel.feed)
     local items = {}
     if okFeed and type(feed) == "table" then
@@ -1516,6 +1670,12 @@ local function refreshUi()
 
     local hooks, nHooks = {}, 0
     for k, v in pairs(Net.found or {}) do
+        if v then
+            nHooks = nHooks + 1
+            hooks[#hooks + 1] = k
+        end
+    end
+    for k, v in pairs(Votes.found or {}) do
         if v then
             nHooks = nHooks + 1
             hooks[#hooks + 1] = k
@@ -1594,7 +1754,11 @@ safe(Net.start, {
             intelCall("addTeam", p, team, "confirmed", why)
         end
     end,
+    round = function()
+        pcall(Votes.reset)
+    end,
 })
+safe(Votes.start)
 
 -- Lighting ditulis di render step paling akhir (sesudah efek EMP game, sebelum kursor menu).
 do
@@ -1630,6 +1794,7 @@ connect(RunService.Heartbeat, function(dt)
         acc.intel = 0
         safeOnce(Intel.step)
         safeOnce(Net.step)
+        safeOnce(Votes.step)
     end
     acc.esp = acc.esp + dt
     if acc.esp >= 0.1 then
@@ -1729,7 +1894,7 @@ Unload = function()
     end
 end
 
-genv.NoctisENIX = { Version = Config.Version, Unload = Unload, Intel = Intel, Actions = Actions, Game = Game, Net = Net, UI = UI }
+genv.NoctisENIX = { Version = Config.Version, Unload = Unload, Intel = Intel, Actions = Actions, Game = Game, Net = Net, Votes = Votes, UI = UI }
 
 UI.selectTab(UI.tabs[1])
 safe(UI.loadSettings)

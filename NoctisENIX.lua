@@ -33,7 +33,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.3.1",
+    Version = "2.4.0",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -159,6 +159,9 @@ local S = {
     espDistance = true,
     espHealth = false,
     espRealName = false, -- false = cuma nama karakter in-game (DisguiseName), tanpa @username
+    espPanel = false, -- false = teks langsung di atas kepala tanpa kotak gelap
+    voteEsp = true, -- tag "-> target" / jumlah vote di atas kepala
+    voteLasers = true, -- garis dari tangan pemilih ke orang yang dia vote
     notifyRoles = true,
     voteAlert = true,
     showGuesses = false, -- false = cuma role / tim yang PASTI yang ditampilkan
@@ -6347,6 +6350,7 @@ return function(ctx)
         end
         return false
     end
+    Net.listen = listen
 
     function Net.start(h)
         hooks = h or {}
@@ -8832,6 +8836,493 @@ local function infoTeam(info)
     return info.team or (info.role and Game.teamOf(info.role)) or nil
 end
 
+ctx.Intel = Intel
+ctx.nameOf = function(p)
+    return charName(p)
+end
+local Votes = (function()
+-- >>> modules/votes.lua
+-- Votes: siapa nge-vote siapa, buat Vote ESP (tag + laser) dan daftar vote di tab Roles.
+-- Semua sumber baca-saja:
+--   tally    : ServiceNetworks.gameService.talliedVotes (getter, dipanggil client game sendiri buat
+--              tanda vote di atas kepala), di-poll pelan.
+--   event    : ServiceNetworks.gameService.votePlayer, kalau server menyiarkannya ke client.
+--   pointing : ServiceNetworks.pointingService.updateArmPointing (RemoteEvent dari server), lengan
+--              yang nunjuk = "laser" ke orang yang di-vote.
+--   attr     : Intel.votes() (attribute talliedVotes / playerVotes) sebagai cadangan.
+-- Bentuk payload belum pernah terekam isinya (cuma jumlahnya), jadi parser-nya toleran.
+--
+-- Dipanggil sebagai: local Votes = (<isi file ini>)(ctx); Votes.start()
+return function(ctx)
+    local V = { log = {}, last = nil, found = {} }
+    local Players, LocalPlayer = ctx.Players, ctx.LocalPlayer
+    local Net, Game = ctx.Net, ctx.Game
+
+    -- Sumber yang lebih kuat nggak ditimpa sumber yang lebih lemah selama masih segar.
+    local RANK = { attr = 1, pointing = 2, event = 3, tally = 4 }
+    local FRESH = 30
+    local POINT_TTL = 90
+
+    local entries = {} -- [voter] = { target = Player, src = "pointing", t = os.clock() }
+    local tallyCounts = {} -- [target] = jumlah dari server
+    local tallyAt = -100
+    local lastActivity = -100
+    local inVote = false
+    local alerted = {}
+    local pollAt = -100
+    local started = false
+
+    local function now()
+        return os.clock()
+    end
+
+    local function note(text)
+        local l = V.log
+        l[#l + 1] = string.format("[%.1f] %s", now(), text)
+        if #l > 40 then
+            table.remove(l, 1)
+        end
+    end
+
+    local function playerFrom(v)
+        if v == nil or type(v) == "boolean" then
+            return nil
+        end
+        local ok, p = pcall(Net.playerFrom, v)
+        return ok and p or nil
+    end
+
+    local function posOf(v)
+        local t = typeof(v)
+        if t == "Vector3" then
+            return v
+        elseif t == "CFrame" then
+            return v.Position
+        end
+        return nil
+    end
+
+    -- Pemain yang badannya paling dekat ke titik (titik ujung "laser").
+    function V.nearestPlayerTo(pos, exclude, maxDist)
+        local best, bestD = nil, maxDist or 6
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= exclude then
+                local c = p.Character
+                local root = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
+                if root then
+                    local d = (root.Position - pos).Magnitude
+                    if d < bestD then
+                        best, bestD = p, d
+                    end
+                end
+            end
+        end
+        return best
+    end
+
+    local function settings()
+        return ctx.S or {}
+    end
+
+    local function nameOf(p)
+        if ctx.nameOf then
+            local ok, n = pcall(ctx.nameOf, p)
+            if ok and n then
+                return n
+            end
+        end
+        return p and p.DisplayName or "?"
+    end
+
+    local function maybeAlert(voter, target, src)
+        if target == LocalPlayer and voter ~= LocalPlayer then
+            -- Vote dari attribute sudah diberi alert oleh Intel.
+            if not alerted[voter] and src ~= "attr" and settings().voteAlert ~= false and type(ctx.notify) == "function" then
+                pcall(ctx.notify, "Vote", nameOf(voter) .. " is voting for you")
+            end
+            alerted[voter] = true
+        else
+            alerted[voter] = nil
+        end
+    end
+
+    local function setEntry(voter, target, src)
+        if not voter or not target or voter == target then
+            return false
+        end
+        local e = entries[voter]
+        local t = now()
+        if e and e.target ~= target and RANK[e.src] > RANK[src] and t - e.t < FRESH then
+            return false
+        end
+        if not (e and e.target == target and e.src == src) then
+            note(nameOf(voter) .. " -> " .. nameOf(target) .. " (" .. src .. ")")
+        end
+        entries[voter] = { target = target, src = src, t = t }
+        lastActivity = t
+        maybeAlert(voter, target, src)
+        return true
+    end
+
+    local function clearEntry(voter, src)
+        local e = entries[voter]
+        if e and (src == nil or e.src == src) then
+            entries[voter] = nil
+            alerted[voter] = nil
+            return true
+        end
+        return false
+    end
+
+    ------------------------------------------------------------------
+    -- Parser payload
+    ------------------------------------------------------------------
+    local VOTER_KEYS = { "player", "Player", "pointer", "voter", "Voter", "from", "source", "user", "userId" }
+    local TARGET_KEYS = { "target", "Target", "votedFor", "vote", "to", "victim", "pointingAt", "subject" }
+    local POS_KEYS = { "position", "Position", "point", "hit", "cframe", "CFrame" }
+
+    -- Map { [pemain] = target } di dalam satu argumen.
+    local function mapPairs(tbl, out)
+        local n = 0
+        for k, v in pairs(tbl) do
+            if type(k) ~= "number" or k > 1000 then
+                local kp = playerFrom(k)
+                if kp then
+                    local tp = playerFrom(v)
+                    if not tp and typeof(v) == "table" then
+                        for _, key in ipairs(TARGET_KEYS) do
+                            tp = tp or playerFrom(rawget(v, key))
+                        end
+                    end
+                    local pos = not tp and (posOf(v) or (typeof(v) == "table" and (posOf(rawget(v, "position")) or posOf(rawget(v, "Position"))))) or nil
+                    if pos then
+                        tp = V.nearestPlayerTo(pos, kp, 6)
+                    end
+                    out[#out + 1] = { kp, tp }
+                    n = n + 1
+                end
+            end
+        end
+        return n
+    end
+
+    -- Return: daftar { pointer, target|nil }. target nil = berhenti nunjuk / bukan ke pemain.
+    function V.parsePointing(...)
+        local args = table.pack(...)
+        local pointer, target, pos
+        local function consider(v)
+            if v == nil or v == true then
+                return
+            end
+            local p = posOf(v)
+            if p then
+                pos = pos or p
+                return
+            end
+            local pl = playerFrom(v)
+            if pl then
+                if not pointer then
+                    pointer = pl
+                elseif pl ~= pointer and not target then
+                    target = pl
+                end
+            end
+        end
+        for i = 1, args.n do
+            local v = args[i]
+            if typeof(v) == "table" then
+                local mapped = {}
+                if mapPairs(v, mapped) > 0 and not pointer then
+                    return mapped
+                end
+                for _, k in ipairs(VOTER_KEYS) do
+                    consider(rawget(v, k))
+                end
+                for _, k in ipairs(TARGET_KEYS) do
+                    consider(rawget(v, k))
+                end
+                for _, k in ipairs(POS_KEYS) do
+                    consider(rawget(v, k))
+                end
+                for _, x in ipairs(v) do
+                    consider(x)
+                end
+            else
+                consider(v)
+            end
+        end
+        if not pointer then
+            return {}
+        end
+        if not target and pos then
+            target = V.nearestPlayerTo(pos, pointer, 6)
+        end
+        return { { pointer, target } }
+    end
+
+    -- talliedVotes: { [voter] = target } | { [target] = jumlah } | { [target] = { voter, ... } }
+    --               | { { voter = .., target = .. }, ... }
+    function V.parseTally(value)
+        local votes, counts = {}, {}
+        if typeof(value) ~= "table" then
+            return votes, counts
+        end
+        for k, v in pairs(value) do
+            local kp = nil
+            if type(k) ~= "number" or k > 1000 then
+                kp = playerFrom(k)
+            end
+            if kp then
+                local vp = playerFrom(v)
+                if vp then
+                    votes[kp] = vp
+                elseif type(v) == "number" then
+                    counts[kp] = v
+                elseif typeof(v) == "table" then
+                    local n = 0
+                    for _, x in pairs(v) do
+                        local xp = playerFrom(x)
+                        if xp then
+                            votes[xp] = kp
+                            n = n + 1
+                        end
+                    end
+                    if n > 0 then
+                        counts[kp] = n
+                    else
+                        local tp
+                        for _, key in ipairs(TARGET_KEYS) do
+                            tp = tp or playerFrom(rawget(v, key))
+                        end
+                        if tp then
+                            votes[kp] = tp
+                        end
+                        local c = rawget(v, "count") or rawget(v, "votes")
+                        if type(c) == "number" then
+                            counts[kp] = c
+                        end
+                    end
+                end
+            elseif typeof(v) == "table" then
+                local voter, tp
+                for _, key in ipairs(VOTER_KEYS) do
+                    voter = voter or playerFrom(rawget(v, key))
+                end
+                for _, key in ipairs(TARGET_KEYS) do
+                    tp = tp or playerFrom(rawget(v, key))
+                end
+                if voter and tp then
+                    votes[voter] = tp
+                end
+            end
+        end
+        return votes, counts
+    end
+
+    ------------------------------------------------------------------
+    -- Handler jaringan
+    ------------------------------------------------------------------
+    function V.onPointing(...)
+        for _, pair in ipairs(V.parsePointing(...)) do
+            local pointer, target = pair[1], pair[2]
+            if target then
+                setEntry(pointer, target, "pointing")
+            else
+                clearEntry(pointer, "pointing")
+            end
+        end
+    end
+
+    function V.onVoteEvent(...)
+        local list = V.parsePointing(...)
+        local pair = list[1]
+        if pair and pair[2] then
+            setEntry(pair[1], pair[2], "event")
+        elseif pair and #list == 1 then
+            clearEntry(pair[1], "event")
+        end
+    end
+
+    function V.applyTally(value)
+        local votes, counts = V.parseTally(value)
+        for voter, e in pairs(entries) do
+            if e.src == "tally" and votes[voter] == nil then
+                clearEntry(voter, "tally")
+            end
+        end
+        local any = false
+        for voter, target in pairs(votes) do
+            setEntry(voter, target, "tally")
+            any = true
+        end
+        tallyCounts = counts
+        tallyAt = now()
+        if any or next(counts) ~= nil then
+            lastActivity = tallyAt
+        end
+    end
+
+    local function pollTally()
+        local remote = Net.service("gameService", "talliedVotes")
+        if not remote then
+            return
+        end
+        local ok, res = Net.invoke(remote, 3)
+        if ok then
+            V.applyTally(res[1])
+        end
+    end
+
+    ------------------------------------------------------------------
+    -- Fase & langkah berkala
+    ------------------------------------------------------------------
+    function V.isVotePhase()
+        local ok, ph = pcall(Game.phase)
+        local l = ok and ph and string.lower(tostring(ph)) or ""
+        return string.find(l, "vot", 1, true) ~= nil or string.find(l, "ballot", 1, true) ~= nil
+            or string.find(l, "trial", 1, true) ~= nil
+    end
+
+    local function snapshotLast()
+        local list = V.list()
+        if #list > 0 then
+            V.last = { t = now(), list = list, counts = V.counts() }
+        end
+    end
+
+    function V.reset()
+        entries, tallyCounts, alerted = {}, {}, {}
+        tallyAt, lastActivity = -100, -100
+    end
+
+    function V.step()
+        local t = now()
+        local vp = V.isVotePhase()
+        if inVote and not vp then
+            -- Voting selesai: simpan hasil terakhir, mulai bersih.
+            snapshotLast()
+            V.reset()
+        elseif vp and not inVote then
+            pollAt = -100 -- voting baru mulai: langsung tanya server
+        end
+        inVote = vp
+
+        -- Cadangan dari attribute (Intel).
+        local okI, iv = false, nil
+        if ctx.Intel and type(ctx.Intel.votes) == "function" then
+            okI, iv = pcall(ctx.Intel.votes)
+        end
+        local attrVoters = {}
+        if okI and type(iv) == "table" then
+            for voter, e in pairs(iv) do
+                if type(e) == "table" and e.target then
+                    attrVoters[voter] = true
+                    local cur = entries[voter]
+                    if not cur or cur.src == "attr" or t - cur.t >= FRESH then
+                        setEntry(voter, e.target, "attr")
+                    end
+                end
+            end
+        end
+        local present = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            present[p] = true
+        end
+        for voter, e in pairs(entries) do
+            if (e.src == "attr" and not attrVoters[voter])
+                or (e.src == "pointing" and t - e.t > POINT_TTL)
+                or not present[voter] or (e.target and not present[e.target]) then
+                clearEntry(voter)
+            end
+        end
+        if t - tallyAt > 10 then
+            tallyCounts = {}
+        end
+
+        -- Getter tally: sering waktu voting / ada aktivitas vote, jarang di luar itu.
+        local every = (vp or t - lastActivity < 20) and 2.5 or 20
+        if started and t - pollAt >= every then
+            pollAt = t
+            task.spawn(function()
+                local ok, err = pcall(pollTally)
+                if not ok and ctx.warnf then
+                    ctx.warnf("Votes poll: " .. tostring(err))
+                end
+            end)
+        end
+    end
+
+    ------------------------------------------------------------------
+    -- API buat ESP / UI
+    ------------------------------------------------------------------
+    function V.get()
+        return entries
+    end
+
+    function V.targetOf(p)
+        local e = entries[p]
+        return e and e.target or nil, e and e.src or nil
+    end
+
+    -- Jumlah suara per target: dari server kalau ada, kalau nggak dihitung dari pasangan vote.
+    function V.counts()
+        local out = {}
+        for target, n in pairs(tallyCounts) do
+            out[target] = n
+        end
+        if next(out) == nil then
+            for _, e in pairs(entries) do
+                if e.target then
+                    out[e.target] = (out[e.target] or 0) + 1
+                end
+            end
+        end
+        return out
+    end
+
+    function V.list()
+        local list = {}
+        for voter, e in pairs(entries) do
+            list[#list + 1] = { voter = voter, target = e.target, src = e.src, t = e.t }
+        end
+        table.sort(list, function(a, b)
+            if a.target ~= b.target then
+                return tostring(a.target and a.target.Name) < tostring(b.target and b.target.Name)
+            end
+            return tostring(a.voter.Name) < tostring(b.voter.Name)
+        end)
+        return list
+    end
+
+    function V.start()
+        if started then
+            return V.found
+        end
+        started = true
+        local listen = Net.listen
+        if type(listen) == "function" then
+            V.found.armPointing = listen(Net.service("pointingService", "updateArmPointing"), V.onPointing)
+            V.found.votePlayer = listen(Net.service("gameService", "votePlayer"), V.onVoteEvent)
+        end
+        V.found.talliedVotes = Net.service("gameService", "talliedVotes") ~= nil
+        if ctx.connect then
+            ctx.connect(Players.PlayerRemoving, function(p)
+                entries[p], alerted[p] = nil, nil
+                for voter, e in pairs(entries) do
+                    if e.target == p then
+                        clearEntry(voter)
+                    end
+                end
+            end)
+        end
+        return V.found
+    end
+
+    return V
+end
+-- <<< modules/votes.lua
+end)()(ctx)
+
 -- Warna role persis dari game (roleColorsConfig), dicerahkan kalau terlalu gelap untuk panel ESP.
 local function roleTint(role, fallback)
     local ok, c = pcall(Game.roleColor, role)
@@ -8876,12 +9367,13 @@ function ESP.ensure(player)
         Size = UDim2.new(0, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.XY,
         BackgroundColor3 = Color3.fromRGB(10, 9, 16),
-        BackgroundTransparency = 0.3,
+        BackgroundTransparency = S.espPanel and 0.3 or 1,
         BorderSizePixel = 0,
         Font = Enum.Font.GothamBold,
         TextSize = 13,
         RichText = true,
-        TextStrokeTransparency = 0.7,
+        TextStrokeColor3 = Color3.new(0, 0, 0),
+        TextStrokeTransparency = 0.25,
         TextColor3 = Color3.new(1, 1, 1),
         TextXAlignment = Enum.TextXAlignment.Center,
     }, o.bb)
@@ -8896,6 +9388,7 @@ function ESP.ensure(player)
         Thickness = 1,
         Transparency = 0.35,
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        Enabled = S.espPanel,
     }, o.tx)
     ESP.objs[player] = o
     return o
@@ -8906,7 +9399,17 @@ function ESP.remove(player)
     if o then
         o.hl:Destroy()
         o.bb:Destroy()
+        if o.laser then
+            o.laser:Destroy()
+        end
         ESP.objs[player] = nil
+    end
+end
+
+local function hideLaser(o)
+    if o.laser then
+        o.laser.Visible = false
+        o.laser.Adornee = nil
     end
 end
 
@@ -8917,7 +9420,54 @@ function ESP.hide(player)
         o.hl.Adornee = nil
         o.bb.Enabled = false
         o.bb.Adornee = nil
+        hideLaser(o)
     end
+end
+
+-- Laser vote: LineHandleAdornment dengan Adornee = Terrain (CFrame-nya identitas, jadi CFrame garis
+-- = koordinat dunia). AlwaysOnTop supaya kelihatan tembus tembok seperti ESP lainnya.
+local VOTE_COLOR = Color3.fromRGB(255, 159, 67)
+local VOTE_ME_COLOR = Color3.fromRGB(255, 70, 80)
+
+local function handPos(char)
+    local hand = char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm") or char:FindFirstChild("RightLowerArm")
+    if hand then
+        return hand.Position
+    end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    return root and (root.Position + Vector3.new(0, 1, 0)) or nil
+end
+
+local function chestPos(char)
+    local t = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or char:FindFirstChild("HumanoidRootPart")
+    return t and t.Position or nil
+end
+
+function ESP.laserStep(o, char, target)
+    local tchar = target and target.Character
+    local from = char and handPos(char)
+    local to = tchar and chestPos(tchar)
+    local terrain = workspace:FindFirstChildOfClass("Terrain")
+    if not (from and to and terrain) or (to - from).Magnitude < 0.5 then
+        hideLaser(o)
+        return
+    end
+    if not o.laser then
+        o.laser = new("LineHandleAdornment", {
+            Name = "Laser",
+            AlwaysOnTop = true,
+            ZIndex = 5,
+            Thickness = 3,
+            Transparency = 0.15,
+            Visible = false,
+        }, espFolder)
+    end
+    local l = o.laser
+    l.Adornee = terrain
+    l.CFrame = CFrame.lookAt(from, to)
+    l.Length = (to - from).Magnitude
+    l.Color3 = target == LocalPlayer and VOTE_ME_COLOR or VOTE_COLOR
+    l.Visible = true
 end
 
 function ESP.clear()
@@ -8951,6 +9501,11 @@ function ESP.step()
     local myRoot = getRoot(LocalPlayer)
     local origin = (myRoot and myRoot.Position) or (cam and cam.CFrame.Position)
     local blink = (os.clock() % 0.8) < 0.4
+    local voteCounts = {}
+    if S.voteEsp then
+        local okC, c = pcall(Votes.counts)
+        voteCounts = okC and c or {}
+    end
 
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer then
@@ -8958,8 +9513,11 @@ function ESP.step()
             local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
             local head = char and char:FindFirstChild("Head")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local voteTarget = S.voteEsp and Votes.targetOf(p) or nil
+            local voteCount = S.voteEsp and voteCounts[p] or nil
+            local hasVote = voteTarget ~= nil or (voteCount and voteCount > 0)
 
-            if S.esp and char and root and hum and hum.Health > 0 then
+            if (S.esp or hasVote) and char and root and hum and hum.Health > 0 then
                 local info = intelInfo(p)
                 local status = info.status
                 local team = infoTeam(info)
@@ -8970,20 +9528,26 @@ function ESP.step()
                 o.hl.FillColor = color
                 o.hl.OutlineColor = color
                 o.hl.FillTransparency = (status.downed and blink) and 0.25 or 0.7
-                o.hl.Enabled = S.espHighlight
+                o.hl.Enabled = S.esp and S.espHighlight
+                o.tx.BackgroundTransparency = S.espPanel and 0.3 or 1
+                o.stroke.Enabled = S.espPanel
 
                 local lines = {}
-                if S.espRoles and team then
+                if not S.esp then
+                    -- Cuma Vote ESP: nama + vote saja.
+                    lines[#lines + 1] = esc(charName(p, info))
+                end
+                if S.esp and S.espRoles and team then
                     lines[#lines + 1] = string.format('<font color="%s" size="10">%s TEAM</font>', hex(color), team)
                 end
-                if S.espNames then
+                if S.esp and S.espNames then
                     local name = esc(charName(p, info))
                     if S.espRealName then
                         name = name .. ' <font size="10" color="#BBBBCC">@' .. esc(p.Name) .. "</font>"
                     end
                     lines[#lines + 1] = name
                 end
-                if S.espRoles and info.role then
+                if S.esp and S.espRoles and info.role then
                     local mark = ""
                     if info.confidence == "likely" then
                         mark = " ?"
@@ -8992,16 +9556,23 @@ function ESP.step()
                     end
                     lines[#lines + 1] = string.format('<font color="%s">[%s%s]</font>', hex(roleTint(info.role, color)), esc(string.upper(info.role)), mark)
                 end
+                if voteTarget then
+                    local who = voteTarget == LocalPlayer and "YOU" or esc(charName(voteTarget))
+                    lines[#lines + 1] = string.format('<font color="%s">VOTES → %s</font>', hex(voteTarget == LocalPlayer and VOTE_ME_COLOR or VOTE_COLOR), who)
+                end
+                if voteCount and voteCount > 0 then
+                    lines[#lines + 1] = string.format('<font color="%s">%d VOTE%s</font>', hex(VOTE_COLOR), voteCount, voteCount == 1 and "" or "S")
+                end
                 local extra = {}
-                if S.espStatus then
+                if S.esp and S.espStatus then
                     for _, tag in ipairs(ESP.statusTags(status)) do
                         extra[#extra + 1] = '<font color="#FFB84E">' .. tag .. "</font>"
                     end
                 end
-                if S.espDistance and origin then
+                if S.esp and S.espDistance and origin then
                     extra[#extra + 1] = string.format("%dm", math.floor((root.Position - origin).Magnitude))
                 end
-                if S.espHealth then
+                if S.esp and S.espHealth then
                     extra[#extra + 1] = string.format("%dHP", math.floor(hum.Health))
                 end
                 if #extra > 0 then
@@ -9012,6 +9583,11 @@ function ESP.step()
                 o.bb.Enabled = #lines > 0
                 o.tx.Text = table.concat(lines, "\n")
                 o.stroke.Color = color
+                if voteTarget and S.voteLasers then
+                    ESP.laserStep(o, char, voteTarget)
+                else
+                    hideLaser(o)
+                end
             else
                 ESP.hide(p)
             end
@@ -9563,6 +10139,16 @@ end)
 UI.toggle(Pages.esp, "Health", nil, S.espHealth, function(v)
     S.espHealth = v
 end)
+UI.toggle(Pages.esp, "Text background", "Dark box behind the text. Off = plain outlined text right above the head.", S.espPanel, function(v)
+    S.espPanel = v
+end)
+UI.section(Pages.esp, "Votes")
+UI.toggle(Pages.esp, "Vote tags", "Shows who each player is voting for (VOTES → name) and how many votes each player has, above their head. Works even with ESP off.", S.voteEsp, function(v)
+    S.voteEsp = v
+end, { risk = "local" })
+UI.toggle(Pages.esp, "Vote lasers", "Draws a line through walls from each voter's hand to the player they vote for. Red = they are voting you.", S.voteLasers, function(v)
+    S.voteLasers = v
+end, { risk = "local" })
 
 -- Roles --------------------------------------------------------------
 UI.section(Pages.roles, "You")
@@ -9576,8 +10162,11 @@ UI.toggle(Pages.roles, "Alert when voted", "Warns you the moment someone votes f
 end)
 UI.button(Pages.roles, "Reset round evidence", "Clears everything learned this round. Happens automatically when a new round starts.", function()
     pcall(Intel.reset, "manual")
+    pcall(Votes.reset)
     notify("Roles", "Evidence cleared", nil, 2)
 end, { action = "Reset" })
+UI.section(Pages.roles, "Votes")
+local voteFeed = UI.feed(Pages.roles, "Who votes who", 16, "No votes yet. They show up during voting.")
 UI.section(Pages.roles, "Known roles")
 local knownFeed = UI.feed(Pages.roles, "Figured out so far", 16, "Nobody yet. Evidence shows up as things happen in the round.")
 UI.section(Pages.roles, "Kill feed and evidence")
@@ -9961,6 +10550,51 @@ local function refreshUi()
     end
     knownFeed.Set(known)
 
+    local voteItems = {}
+    local okV, vlist = pcall(Votes.list)
+    local okVC, vcounts = pcall(Votes.counts)
+    local shownLast = false
+    if okV and type(vlist) == "table" and #vlist == 0 and Votes.last and os.clock() - Votes.last.t < 120 then
+        vlist, vcounts, shownLast = Votes.last.list, Votes.last.counts, true
+        okVC = true
+    end
+    if okV and type(vlist) == "table" then
+        if shownLast then
+            voteItems[#voteItems + 1] = { text = "Last voting:", color = Theme.Muted }
+        end
+        if okVC and type(vcounts) == "table" then
+            local tally = {}
+            for target, n in pairs(vcounts) do
+                if target and n > 0 then
+                    tally[#tally + 1] = { target = target, n = n }
+                end
+            end
+            table.sort(tally, function(a, b)
+                return a.n > b.n
+            end)
+            local parts = {}
+            for i = 1, math.min(#tally, 6) do
+                local e = tally[i]
+                parts[#parts + 1] = "<b>" .. esc(e.target == LocalPlayer and "You" or charName(e.target)) .. "</b> " .. e.n
+            end
+            if #parts > 0 then
+                voteItems[#voteItems + 1] = { text = "Tally: " .. table.concat(parts, "   "), color = VOTE_COLOR }
+            end
+        end
+        for _, e in ipairs(vlist) do
+            if #voteItems >= 16 then
+                break
+            end
+            local me = e.target == LocalPlayer
+            voteItems[#voteItems + 1] = {
+                text = "<b>" .. esc(e.voter == LocalPlayer and "You" or charName(e.voter)) .. "</b>  →  <b>"
+                    .. esc(me and "You" or (e.target and charName(e.target) or "?")) .. '</b>  <font color="#8F89AA">(' .. esc(e.src) .. ")</font>",
+                color = me and VOTE_ME_COLOR or nil,
+            }
+        end
+    end
+    voteFeed.Set(voteItems)
+
     local okFeed, feed = pcall(Intel.feed)
     local items = {}
     if okFeed and type(feed) == "table" then
@@ -9980,6 +10614,12 @@ local function refreshUi()
 
     local hooks, nHooks = {}, 0
     for k, v in pairs(Net.found or {}) do
+        if v then
+            nHooks = nHooks + 1
+            hooks[#hooks + 1] = k
+        end
+    end
+    for k, v in pairs(Votes.found or {}) do
         if v then
             nHooks = nHooks + 1
             hooks[#hooks + 1] = k
@@ -10058,7 +10698,11 @@ safe(Net.start, {
             intelCall("addTeam", p, team, "confirmed", why)
         end
     end,
+    round = function()
+        pcall(Votes.reset)
+    end,
 })
+safe(Votes.start)
 
 -- Lighting ditulis di render step paling akhir (sesudah efek EMP game, sebelum kursor menu).
 do
@@ -10094,6 +10738,7 @@ connect(RunService.Heartbeat, function(dt)
         acc.intel = 0
         safeOnce(Intel.step)
         safeOnce(Net.step)
+        safeOnce(Votes.step)
     end
     acc.esp = acc.esp + dt
     if acc.esp >= 0.1 then
@@ -10193,7 +10838,7 @@ Unload = function()
     end
 end
 
-genv.NoctisENIX = { Version = Config.Version, Unload = Unload, Intel = Intel, Actions = Actions, Game = Game, Net = Net, UI = UI }
+genv.NoctisENIX = { Version = Config.Version, Unload = Unload, Intel = Intel, Actions = Actions, Game = Game, Net = Net, Votes = Votes, UI = UI }
 
 UI.selectTab(UI.tabs[1])
 safe(UI.loadSettings)

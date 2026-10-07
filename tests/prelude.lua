@@ -114,6 +114,9 @@ typeof = function(v)
     if type(v) == "table" then
         local t = rawget(v, "__rbxtype")
         if t then return t end
+        local mt = getmetatable(v)
+        if mt == V3 then return "Vector3" end
+        if mt == CF then return "CFrame" end
     end
     return type(v)
 end
@@ -285,6 +288,7 @@ Methods.GetService = function(self, name)
 end
 workspace = mk("Workspace", { Name = "Workspace" })
 workspace.CurrentCamera = mk("Camera")
+mk("Terrain", { Name = "Terrain", CFrame = CFrame.new(0, 0, 0) }, workspace)
 services.Workspace = workspace
 services.Players = mk("Players")
 services.Lighting = mk("Lighting")

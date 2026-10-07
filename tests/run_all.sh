@@ -22,6 +22,7 @@ for f in $ROOT/NoctisENIX.lua $ROOT/NoctisENIX_Inspector.lua $ROOT/src/modules/*
 done
 run "module game_api"      node modtest.mjs modules/test_game_api.lua
 run "module net"           node modtest.mjs modules/test_net.lua NetFactory=$ROOT/src/modules/net.lua
+run "module votes"         node modtest.mjs modules/test_votes.lua NetFactory=$ROOT/src/modules/net.lua VotesFactory=$ROOT/src/modules/votes.lua
 run "module intel"         node modtest.mjs modules/test_intel.lua IntelFactory=$ROOT/src/modules/intel.lua
 run "module intel+net"     node modtest.mjs modules/test_intel_net.lua IntelFactory=$ROOT/src/modules/intel.lua
 run "module intel anim"    node modtest.mjs modules/test_intel_anim.lua IntelFactory=$ROOT/src/modules/intel.lua
