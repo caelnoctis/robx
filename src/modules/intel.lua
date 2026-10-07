@@ -2646,7 +2646,8 @@ return function(ctx)
         for p, e in pairs(out) do
             if e.target == LocalPlayer and St.voteTargets[p] ~= LocalPlayer and p ~= LocalPlayer then
                 pushFeed(nameOf(p) .. " voted for you")
-                if settings().voteAlert ~= false and type(ctx.notify) == "function" then
+                -- Kalau modul Votes jalan, toast-nya dari sana saja (satu vote = satu toast).
+                if settings().voteAlert ~= false and type(ctx.notify) == "function" and not ctx.votesOwnAlerts then
                     pcall(ctx.notify, "Vote", nameOf(p) .. " voted for you")
                 end
             end

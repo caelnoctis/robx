@@ -463,6 +463,17 @@ do
     check(Intel.votes()[dan] and Intel.votes()[dan].target == Me, "vote by UserId")
     check(not notesHas("DanD voted for you"), "voteAlert=false suppresses")
     ctx.S.voteAlert = nil
+    -- modul Votes yang pegang toast: Intel cuma mencatat di feed (satu vote = satu toast)
+    ctx.votesOwnAlerts = true
+    eve:SetAttribute("votedFor", Me.UserId)
+    adv(1.1)
+    Intel.step()
+    check(Intel.votes()[eve] and Intel.votes()[eve].target == Me, "vote still tracked when Votes owns alerts")
+    check(not notesHas("EveD voted for you"), "no Intel toast when Votes owns alerts")
+    local fed = false
+    for _, e in ipairs(Intel.feed()) do if string.find(e.text, "EveD voted for you", 1, true) then fed = true end end
+    check(fed, "feed line kept when Votes owns alerts")
+    ctx.votesOwnAlerts = nil
     section("votes")
 end
 

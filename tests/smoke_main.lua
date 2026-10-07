@@ -117,20 +117,48 @@ do
     check(toastHas("is voting for you"), "toast when voted")
     refreshUi()
     check(anyLabel("→  <b>You</b>") and anyLabel("Tally:"), "Roles tab lists votes and tally")
-    -- ESP mati: tag vote tetap ada, highlight dan tag role nggak
+    -- ESP mati: tag vote tetap ada; highlight, tim, role, status, jarak nggak bocor
     S.esp = false
     ESP.step()
-    check(ao.bb.Enabled == true and string.find(ao.tx.Text, "VOTES", 1, true) ~= nil, "vote tags work with ESP off")
-    check(ao.hl.Enabled == false and string.find(ao.tx.Text, "EVIL TEAM", 1, true) == nil, "only vote info without ESP")
+    local vt = ao.tx.Text
+    check(ao.bb.Enabled == true and string.find(vt, "VOTES", 1, true) ~= nil, "vote tags work with ESP off")
+    check(ao.hl.Enabled == false, "no highlight in vote-only mode")
+    check(string.find(vt, "EVIL TEAM", 1, true) == nil and string.find(vt, "[MAFIA]", 1, true) == nil
+        and string.find(vt, "DOWNED", 1, true) == nil and string.find(vt, "%dm") == nil and string.find(vt, "HP", 1, true) == nil,
+        "no team / role / status / distance in vote-only mode: " .. vt)
+    S.espPanel = true
+    ESP.step()
+    check(ao.stroke.Enabled == true and ao.stroke.Color == UNKNOWN_COLOR, "panel border is not team-colored in vote-only mode")
+    S.espPanel = false
+    -- tag vote mati, laser tetap jalan
+    S.voteEsp = false
+    ESP.step()
+    check(ao.laser.Visible == true and ao.bb.Enabled == false, "lasers work with vote tags off (ESP off)")
+    S.esp = true
+    ESP.step()
+    check(ao.laser.Visible == true and string.find(ao.tx.Text, "VOTES", 1, true) == nil, "lasers without tags (ESP on)")
+    S.esp = false
+    S.voteEsp = true
     S.voteLasers = false
     ESP.step()
     check(ao.laser.Visible == false, "laser toggle off")
     S.voteLasers = true
+    ESP.step()
+    check(ao.laser.Visible == true, "laser back on")
     Votes.reset()
     ESP.step()
     check(ao.laser.Visible == false and ao.bb.Enabled == false, "nothing shown without votes and ESP off")
+    -- objek ESP pemilih dibuang (pemain keluar): laser ikut dihancurkan
+    Votes.onPointing(alice, bob)
+    ESP.step()
+    local laser = ao.laser
+    check(laser ~= nil and laser.Visible == true, "laser for the removal check")
+    ESP.remove(alice)
+    check(laser ~= nil and rawget(laser, "_destroyed") == true, "laser destroyed with the ESP object")
+    Votes.reset()
     S.esp = true
     ESP.step()
+    ao = ESP.objs[alice]
 end
 
 -- 3. klik semua toggle & action (lewati yang berbahaya)
@@ -169,6 +197,7 @@ do
     local ink = __mk("ScreenGui", { Name = "EmpInk" }, pg)
     local after = __mk("ScreenGui", { Name = "EmpAfterimage" }, pg)
     local hud = __mk("ScreenGui", { Name = "Hud" }, pg)
+    local device = __mk("ScreenGui", { Name = "EmpDevice" }, pg)
     L.Brightness, L.ExposureCompensation = 0.5, -1
     local fb = control("Fullbright", "Toggle")
     click(fb)
@@ -184,12 +213,17 @@ do
     check(tint.Enabled == true, "plain color grading left alone")
     check(ink.Enabled == false and after.Enabled == false, "EMP overlays hidden")
     check(hud.Enabled == true, "other GUIs untouched")
+    check(device.Enabled == true, "only the confirmed EMP overlays are hidden (not e.g. the Mafia EMP device UI)")
     check(atmo.Density == 0.45, "atmosphere untouched without No fog")
     -- game nyalain lagi overlay di tengah EMP -> tetap kita matikan
     ink.Enabled = true
     __runRenderBinds()
     check(ink.Enabled == false, "overlay stays hidden")
-    -- EMP selesai: filter balik normal -> dilepas
+    -- akhir EMP: tween balik ke normal. Di tengah jalan (sudah lewat ambang gelap, belum netral)
+    -- efeknya tetap ditahan supaya layar nggak sempat redup.
+    dv.Brightness, dv.TintColor = -0.03, Color3.new(0.9, 0.9, 0.9)
+    __runRenderBinds()
+    check(dv.Enabled == false, "held until the effect is fully neutral (hysteresis)")
     dv.Brightness, dv.TintColor = 0, Color3.new(1, 1, 1)
     __runRenderBinds()
     check(dv.Enabled == true, "color correction released after EMP")
@@ -208,7 +242,14 @@ do
     check(atmo.Density == 0, "no fog still active")
     click(control("No fog", "Toggle"))
     check(math.abs(atmo.Density - 0.45) < 1e-6 and atmo.Haze == 1.5 and L.FogEnd == 900, "atmosphere and fog restored")
-    dv:Destroy(); tint:Destroy(); atmo:Destroy(); ink:Destroy(); after:Destroy(); hud:Destroy()
+    -- overlay yang lagi nggak punya parent waktu fullbright dimatikan tetap dipulihkan
+    click(fb)
+    __runRenderBinds()
+    check(ink.Enabled == false, "overlay hidden again")
+    ink.Parent = nil
+    click(fb)
+    check(ink.Enabled == true, "unparented overlay restored too")
+    dv:Destroy(); tint:Destroy(); atmo:Destroy(); ink:Destroy(); after:Destroy(); hud:Destroy(); device:Destroy()
 end
 
 -- 4. pesan dari Actions sampai ke toast

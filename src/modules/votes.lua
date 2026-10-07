@@ -7,6 +7,7 @@
 --              yang nunjuk = "laser" ke orang yang di-vote.
 --   attr     : Intel.votes() (attribute talliedVotes / playerVotes) sebagai cadangan.
 -- Bentuk payload belum pernah terekam isinya (cuma jumlahnya), jadi parser-nya toleran.
+-- Toast "X is voting for you" cuma dari modul ini (Intel diam kalau ctx.votesOwnAlerts).
 --
 -- Dipanggil sebagai: local Votes = (<isi file ini>)(ctx); Votes.start()
 return function(ctx)
@@ -17,19 +18,32 @@ return function(ctx)
     -- Sumber yang lebih kuat nggak ditimpa sumber yang lebih lemah selama masih segar.
     local RANK = { attr = 1, pointing = 2, event = 3, tally = 4 }
     local FRESH = 30
-    local POINT_TTL = 90
+    -- tally & attr di-refresh sumbernya sendiri; pointing & event bisa diam tanpa "stop".
+    local ENTRY_TTL = { pointing = 90, event = 90 }
+    local ALERT_GAP = 20 -- toast ulang untuk pemilih yang sama paling cepat sekali per 20 dtk
+    local DEAD_RETRY = 30 -- getter tally yang ditandai mati dicoba lagi setelah jeda ini
+    local TALLY_TIMEOUT = 5
+    local AIM_NEAR_BODY = 3 -- titik sedekat ini ke tangan si penunjuk = posisi lengan, bukan target
+    local RAY_WIDTH = 3.5 -- jarak tegak lurus maksimum dari sinar lengan ke badan target
+    local RAY_RANGE = 150
+    local SHRINK_GRACE = 1.5 -- vote yang hilang satu-satu dalam jeda ini = lengan turun di akhir voting
 
-    local entries = {} -- [voter] = { target = Player, src = "pointing", t = os.clock() }
+    local entries = {} -- [voter] = { target = Player, src = "pointing", t = waktu }
     local tallyCounts = {} -- [target] = jumlah dari server
     local tallyAt = -100
     local lastActivity = -100
     local inVote = false
-    local alerted = {}
+    local alerted = {} -- [voter] = waktu toast terakhir
     local pollAt = -100
+    local deadSince = nil
+    local held = nil -- daftar vote terakhir yang nggak kosong; jadi V.last begitu daftar kosong / voting selesai
+    local shrinkAt = nil -- waktu daftar mulai mengecil; held belum ditimpa sampai jelas ini bukan akhir voting
+    local version, heldVersion = 0, -1
     local started = false
 
+    V._clock = os.clock
     local function now()
-        return os.clock()
+        return V._clock()
     end
 
     local function note(text)
@@ -48,14 +62,20 @@ return function(ctx)
         return ok and p or nil
     end
 
-    local function posOf(v)
-        local t = typeof(v)
-        if t == "Vector3" then
-            return v
-        elseif t == "CFrame" then
-            return v.Position
+    local function bodyPos(p)
+        local c = p and p.Character
+        local part = c and (c:FindFirstChild("UpperTorso") or c:FindFirstChild("Torso") or c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
+        return part and part.Position or nil
+    end
+
+    local function handPos(p)
+        local c = p and p.Character
+        local hand = c and (c:FindFirstChild("RightHand") or c:FindFirstChild("Right Arm") or c:FindFirstChild("RightLowerArm"))
+        if hand then
+            return hand.Position
         end
-        return nil
+        local root = c and c:FindFirstChild("HumanoidRootPart")
+        return root and (root.Position + Vector3.new(0, 1, 0)) or nil
     end
 
     -- Pemain yang badannya paling dekat ke titik (titik ujung "laser").
@@ -69,6 +89,31 @@ return function(ctx)
                     local d = (root.Position - pos).Magnitude
                     if d < bestD then
                         best, bestD = p, d
+                    end
+                end
+            end
+        end
+        return best
+    end
+
+    -- Pemain pertama yang kena sinar dari origin ke arah dir (yang paling dekat di sepanjang sinar).
+    function V.alongRay(origin, dir, exclude)
+        if dir.Magnitude < 1e-3 then
+            return nil
+        end
+        local unit = dir.Unit
+        local best, bestAlong = nil, RAY_RANGE
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= exclude then
+                local bp = bodyPos(p)
+                if bp then
+                    local v = bp - origin
+                    local along = v:Dot(unit)
+                    if along > 0.5 and along < bestAlong then
+                        local perp = (v - unit * along).Magnitude
+                        if perp <= RAY_WIDTH then
+                            best, bestAlong = p, along
+                        end
                     end
                 end
             end
@@ -90,15 +135,19 @@ return function(ctx)
         return p and p.DisplayName or "?"
     end
 
-    local function maybeAlert(voter, target, src)
-        if target == LocalPlayer and voter ~= LocalPlayer then
-            -- Vote dari attribute sudah diberi alert oleh Intel.
-            if not alerted[voter] and src ~= "attr" and settings().voteAlert ~= false and type(ctx.notify) == "function" then
-                pcall(ctx.notify, "Vote", nameOf(voter) .. " is voting for you")
-            end
-            alerted[voter] = true
-        else
-            alerted[voter] = nil
+    -- Dipanggil cuma waktu target seorang pemilih BERUBAH ke kita (bukan tiap refresh).
+    local function maybeAlert(voter, target)
+        if target ~= LocalPlayer or voter == LocalPlayer then
+            return
+        end
+        local t = now()
+        local last = alerted[voter]
+        alerted[voter] = t
+        if last and t - last < ALERT_GAP then
+            return
+        end
+        if settings().voteAlert ~= false and type(ctx.notify) == "function" then
+            pcall(ctx.notify, "Vote", nameOf(voter) .. " is voting for you")
         end
     end
 
@@ -108,15 +157,21 @@ return function(ctx)
         end
         local e = entries[voter]
         local t = now()
-        if e and e.target ~= target and RANK[e.src] > RANK[src] and t - e.t < FRESH then
-            return false
+        if e and RANK[e.src] > RANK[src] and t - e.t < FRESH then
+            -- Sumber yang lebih kuat masih segar: entri tetap miliknya. Sumber lemah yang setuju nggak
+            -- mengganti label / waktunya, supaya "stop" dari sumber lemah nggak menghapus vote itu.
+            return e.target == target
         end
-        if not (e and e.target == target and e.src == src) then
+        local changed = not e or e.target ~= target
+        if changed or e.src ~= src then
             note(nameOf(voter) .. " -> " .. nameOf(target) .. " (" .. src .. ")")
+            version = version + 1
         end
         entries[voter] = { target = target, src = src, t = t }
         lastActivity = t
-        maybeAlert(voter, target, src)
+        if changed then
+            maybeAlert(voter, target)
+        end
         return true
     end
 
@@ -124,7 +179,7 @@ return function(ctx)
         local e = entries[voter]
         if e and (src == nil or e.src == src) then
             entries[voter] = nil
-            alerted[voter] = nil
+            version = version + 1
             return true
         end
         return false
@@ -136,6 +191,56 @@ return function(ctx)
     local VOTER_KEYS = { "player", "Player", "pointer", "voter", "Voter", "from", "source", "user", "userId" }
     local TARGET_KEYS = { "target", "Target", "votedFor", "vote", "to", "victim", "pointingAt", "subject" }
     local POS_KEYS = { "position", "Position", "point", "hit", "cframe", "CFrame" }
+
+    -- { pos = Vector3, look = Vector3|nil } untuk Vector3 / CFrame.
+    local function pointOf(v)
+        local t = typeof(v)
+        if t == "Vector3" then
+            return { pos = v }
+        elseif t == "CFrame" then
+            return { pos = v.Position, look = v.LookVector }
+        end
+        return nil
+    end
+
+    -- Target dari titik / CFrame / arah yang dikirim bersama si penunjuk.
+    local function targetFromPoints(pointer, points)
+        if #points == 0 then
+            return nil
+        end
+        local origin = handPos(pointer)
+        if not origin then
+            return V.nearestPlayerTo(points[1].pos, pointer, 6)
+        end
+        -- 1) titik dunia yang jauh dari tangannya (ujung laser): ambil yang paling jauh.
+        local far, farD = nil, AIM_NEAR_BODY
+        for _, pt in ipairs(points) do
+            local d = (pt.pos - origin).Magnitude
+            if d > farD and pt.pos.Magnitude > 1.5 then
+                far, farD = pt, d
+            end
+        end
+        if far then
+            local p = V.nearestPlayerTo(far.pos, pointer, 6)
+            if p then
+                return p
+            end
+        end
+        -- 2) CFrame lengan / vektor arah: ikuti sinarnya dari tangan.
+        for _, pt in ipairs(points) do
+            local dir = pt.look
+            if not dir and pt.pos.Magnitude <= 1.5 then
+                dir = pt.pos
+            end
+            if dir then
+                local p = V.alongRay(origin, dir, pointer)
+                if p then
+                    return p
+                end
+            end
+        end
+        return nil
+    end
 
     -- Map { [pemain] = target } di dalam satu argumen.
     local function mapPairs(tbl, out)
@@ -150,9 +255,16 @@ return function(ctx)
                             tp = tp or playerFrom(rawget(v, key))
                         end
                     end
-                    local pos = not tp and (posOf(v) or (typeof(v) == "table" and (posOf(rawget(v, "position")) or posOf(rawget(v, "Position"))))) or nil
-                    if pos then
-                        tp = V.nearestPlayerTo(pos, kp, 6)
+                    if not tp then
+                        local pts = {}
+                        local pt = pointOf(v)
+                        if not pt and typeof(v) == "table" then
+                            pt = pointOf(rawget(v, "position")) or pointOf(rawget(v, "Position"))
+                        end
+                        if pt then
+                            pts[1] = pt
+                            tp = targetFromPoints(kp, pts)
+                        end
                     end
                     out[#out + 1] = { kp, tp }
                     n = n + 1
@@ -165,14 +277,15 @@ return function(ctx)
     -- Return: daftar { pointer, target|nil }. target nil = berhenti nunjuk / bukan ke pemain.
     function V.parsePointing(...)
         local args = table.pack(...)
-        local pointer, target, pos
+        local pointer, target
+        local points = {}
         local function consider(v)
             if v == nil or v == true then
                 return
             end
-            local p = posOf(v)
-            if p then
-                pos = pos or p
+            local pt = pointOf(v)
+            if pt then
+                points[#points + 1] = pt
                 return
             end
             local pl = playerFrom(v)
@@ -210,14 +323,18 @@ return function(ctx)
         if not pointer then
             return {}
         end
-        if not target and pos then
-            target = V.nearestPlayerTo(pos, pointer, 6)
+        if not target then
+            target = targetFromPoints(pointer, points)
         end
         return { { pointer, target } }
     end
 
+    local function plausibleCount(c)
+        return type(c) == "number" and c >= 0 and c <= 1000
+    end
+
     -- talliedVotes: { [voter] = target } | { [target] = jumlah } | { [target] = { voter, ... } }
-    --               | { { voter = .., target = .. }, ... }
+    --               | { [voter] = { target = .. } } | { { voter = .., target = .. }, ... }
     function V.parseTally(value)
         local votes, counts = {}, {}
         if typeof(value) ~= "table" then
@@ -233,28 +350,37 @@ return function(ctx)
                 if vp then
                     votes[kp] = vp
                 elseif type(v) == "number" then
-                    counts[kp] = v
-                elseif typeof(v) == "table" then
-                    local n = 0
-                    for _, x in pairs(v) do
-                        local xp = playerFrom(x)
-                        if xp then
-                            votes[xp] = kp
-                            n = n + 1
-                        end
+                    -- jumlah suara; UserId (> 1000) yang pemainnya sudah keluar bukan jumlah
+                    if plausibleCount(v) then
+                        counts[kp] = v
                     end
-                    if n > 0 then
-                        counts[kp] = n
+                elseif typeof(v) == "table" then
+                    -- { [voter] = { target = X } }: record milik si pemilih
+                    local tp
+                    for _, key in ipairs(TARGET_KEYS) do
+                        tp = tp or playerFrom(rawget(v, key))
+                    end
+                    if tp and tp ~= kp then
+                        votes[kp] = tp
                     else
-                        local tp
-                        for _, key in ipairs(TARGET_KEYS) do
-                            tp = tp or playerFrom(rawget(v, key))
+                        -- { [target] = { voter, ... } } atau { voters = {...} }: cuma elemen array yang pemilih
+                        local list = v
+                        if #v == 0 then
+                            local alt = rawget(v, "voters") or rawget(v, "votes")
+                            list = typeof(alt) == "table" and alt or {}
                         end
-                        if tp then
-                            votes[kp] = tp
+                        local n = 0
+                        for _, x in ipairs(list) do
+                            local xp = playerFrom(x)
+                            if xp and xp ~= kp then
+                                votes[xp] = kp
+                                n = n + 1
+                            end
                         end
                         local c = rawget(v, "count") or rawget(v, "votes")
-                        if type(c) == "number" then
+                        if n > 0 then
+                            counts[kp] = n
+                        elseif plausibleCount(c) then
                             counts[kp] = c
                         end
                     end
@@ -313,6 +439,7 @@ return function(ctx)
         end
         tallyCounts = counts
         tallyAt = now()
+        version = version + 1
         if any or next(counts) ~= nil then
             lastActivity = tallyAt
         end
@@ -323,7 +450,17 @@ return function(ctx)
         if not remote then
             return
         end
-        local ok, res = Net.invoke(remote, 3)
+        if Net.dead and Net.dead[remote] then
+            -- Satu balasan lambat menandai getter ini mati; coba lagi setelah jeda, bukan selamanya.
+            deadSince = deadSince or now()
+            if now() - deadSince < DEAD_RETRY then
+                return
+            end
+            Net.dead[remote] = nil
+            deadSince = nil
+            note("retrying talliedVotes")
+        end
+        local ok, res = Net.invoke(remote, TALLY_TIMEOUT)
         if ok then
             V.applyTally(res[1])
         end
@@ -339,29 +476,30 @@ return function(ctx)
             or string.find(l, "trial", 1, true) ~= nil
     end
 
-    local function snapshotLast()
-        local list = V.list()
-        if #list > 0 then
-            V.last = { t = now(), list = list, counts = V.counts() }
+    local function promoteHeld(t)
+        if held then
+            held.t = t
+            V.last, held = held, nil
         end
     end
 
+    -- Data voting yang sedang jalan (dipanggil juga saat voting selesai).
     function V.reset()
         entries, tallyCounts, alerted = {}, {}, {}
         tallyAt, lastActivity = -100, -100
+        held, shrinkAt = nil, nil
+        version = version + 1
+    end
+
+    -- Ronde baru / reset manual: hasil voting terakhir ikut dibuang.
+    function V.clearAll()
+        V.reset()
+        V.last = nil
     end
 
     function V.step()
         local t = now()
         local vp = V.isVotePhase()
-        if inVote and not vp then
-            -- Voting selesai: simpan hasil terakhir, mulai bersih.
-            snapshotLast()
-            V.reset()
-        elseif vp and not inVote then
-            pollAt = -100 -- voting baru mulai: langsung tanya server
-        end
-        inVote = vp
 
         -- Cadangan dari attribute (Intel).
         local okI, iv = false, nil
@@ -373,10 +511,7 @@ return function(ctx)
             for voter, e in pairs(iv) do
                 if type(e) == "table" and e.target then
                     attrVoters[voter] = true
-                    local cur = entries[voter]
-                    if not cur or cur.src == "attr" or t - cur.t >= FRESH then
-                        setEntry(voter, e.target, "attr")
-                    end
+                    setEntry(voter, e.target, "attr")
                 end
             end
         end
@@ -385,18 +520,54 @@ return function(ctx)
             present[p] = true
         end
         for voter, e in pairs(entries) do
+            local ttl = ENTRY_TTL[e.src]
             if (e.src == "attr" and not attrVoters[voter])
-                or (e.src == "pointing" and t - e.t > POINT_TTL)
+                or (ttl and t - e.t > ttl)
                 or not present[voter] or (e.target and not present[e.target]) then
                 clearEntry(voter)
             end
         end
-        if t - tallyAt > 10 then
+        if t - tallyAt > 10 and next(tallyCounts) ~= nil then
             tallyCounts = {}
+            version = version + 1
         end
 
-        -- Getter tally: sering waktu voting / ada aktivitas vote, jarang di luar itu.
-        local every = (vp or t - lastActivity < 20) and 2.5 or 20
+        -- Hasil terakhir: disimpan selama ada vote, dipakai begitu daftarnya kosong (lengan turun,
+        -- tally jadi {}) atau voting selesai. Nggak bergantung pada nama fase. Kalau daftar mengecil,
+        -- held ditahan SHRINK_GRACE dtk: lengan yang turun satu-satu di akhir voting tetap tercatat
+        -- lengkap, sedangkan orang yang memang membatalkan vote masuk setelah jeda itu.
+        if version ~= heldVersion then
+            heldVersion = version
+            local live = V.list()
+            if #live == 0 then
+                promoteHeld(t)
+                shrinkAt = nil
+            elseif held and #live < #held.list then
+                shrinkAt = shrinkAt or t
+            else
+                held = { t = t, list = live, counts = V.counts() }
+                shrinkAt = nil
+            end
+        end
+        if shrinkAt and t - shrinkAt >= SHRINK_GRACE then
+            local live = V.list()
+            if #live > 0 then
+                held = { t = t, list = live, counts = V.counts() }
+            end
+            shrinkAt = nil
+        end
+        if inVote and not vp then
+            promoteHeld(t)
+            V.reset()
+        elseif vp and not inVote then
+            pollAt = -100 -- voting baru mulai: langsung tanya server
+        end
+        inVote = vp
+
+        -- Getter tally: sering di siang hari / waktu voting / ada aktivitas vote, jarang malam hari.
+        local okN, night = pcall(Game.isNight)
+        local busy = vp or not (okN and night) or t - lastActivity < 20
+        local every = busy and 2.5 or 20
         if started and t - pollAt >= every then
             pollAt = t
             task.spawn(function()
@@ -420,18 +591,16 @@ return function(ctx)
         return e and e.target or nil, e and e.src or nil
     end
 
-    -- Jumlah suara per target: dari server kalau ada, kalau nggak dihitung dari pasangan vote.
+    -- Jumlah suara per target: dihitung dari pasangan vote, lalu ditimpa jumlah dari server per target.
     function V.counts()
         local out = {}
+        for _, e in pairs(entries) do
+            if e.target then
+                out[e.target] = (out[e.target] or 0) + 1
+            end
+        end
         for target, n in pairs(tallyCounts) do
             out[target] = n
-        end
-        if next(out) == nil then
-            for _, e in pairs(entries) do
-                if e.target then
-                    out[e.target] = (out[e.target] or 0) + 1
-                end
-            end
         end
         return out
     end
@@ -463,7 +632,8 @@ return function(ctx)
         V.found.talliedVotes = Net.service("gameService", "talliedVotes") ~= nil
         if ctx.connect then
             ctx.connect(Players.PlayerRemoving, function(p)
-                entries[p], alerted[p] = nil, nil
+                clearEntry(p)
+                alerted[p] = nil
                 for voter, e in pairs(entries) do
                     if e.target == p then
                         clearEntry(voter)

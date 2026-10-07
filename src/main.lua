@@ -32,7 +32,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.4.0",
+    Version = "2.4.1",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -378,6 +378,7 @@ end
 local Votes = (function()
 --@@INCLUDE modules/votes.lua@@
 end)()(ctx)
+ctx.votesOwnAlerts = true
 
 -- Warna role persis dari game (roleColorsConfig), dicerahkan kalau terlalu gelap untuk panel ESP.
 local function roleTint(role, fallback)
@@ -569,7 +570,7 @@ function ESP.step()
             local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
             local head = char and char:FindFirstChild("Head")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local voteTarget = S.voteEsp and Votes.targetOf(p) or nil
+            local voteTarget = (S.voteEsp or S.voteLasers) and Votes.targetOf(p) or nil
             local voteCount = S.voteEsp and voteCounts[p] or nil
             local hasVote = voteTarget ~= nil or (voteCount and voteCount > 0)
 
@@ -589,7 +590,7 @@ function ESP.step()
                 o.stroke.Enabled = S.espPanel
 
                 local lines = {}
-                if not S.esp then
+                if not S.esp and S.voteEsp then
                     -- Cuma Vote ESP: nama + vote saja.
                     lines[#lines + 1] = esc(charName(p, info))
                 end
@@ -612,7 +613,7 @@ function ESP.step()
                     end
                     lines[#lines + 1] = string.format('<font color="%s">[%s%s]</font>', hex(roleTint(info.role, color)), esc(string.upper(info.role)), mark)
                 end
-                if voteTarget then
+                if voteTarget and S.voteEsp then
                     local who = voteTarget == LocalPlayer and "YOU" or esc(charName(voteTarget))
                     lines[#lines + 1] = string.format('<font color="%s">VOTES → %s</font>', hex(voteTarget == LocalPlayer and VOTE_ME_COLOR or VOTE_COLOR), who)
                 end
@@ -638,7 +639,7 @@ function ESP.step()
                 o.bb.Adornee = head or root
                 o.bb.Enabled = #lines > 0
                 o.tx.Text = table.concat(lines, "\n")
-                o.stroke.Color = color
+                o.stroke.Color = S.esp and color or UNKNOWN_COLOR
                 if voteTarget and S.voteLasers then
                     ESP.laserStep(o, char, voteTarget)
                 else
@@ -772,9 +773,11 @@ local World = {
     savedLight = nil,
     savedFog = nil,
     origHold = setmetatable({}, { __mode = "k" }),
-    heldFx = setmetatable({}, { __mode = "k" }), -- [ColorCorrectionEffect] = Enabled asli
-    heldGui = setmetatable({}, { __mode = "k" }), -- [ScreenGui EMP] = Enabled asli
-    heldAtmo = setmetatable({}, { __mode = "k" }), -- [Atmosphere] = { Density, Haze } asli
+    -- Tabel biasa (bukan weak): userdata Instance bisa di-GC lalu dibuat ulang, sehingga kunci weak
+    -- bisa hilang padahal instance-nya masih ada dan masih kita matikan. Isinya cuma beberapa entri.
+    heldFx = {}, -- [ColorCorrectionEffect] = Enabled asli
+    heldGui = {}, -- [ScreenGui EMP] = Enabled asli
+    heldAtmo = {}, -- [Atmosphere] = { Density, Haze } asli
 }
 
 -- Fullbright. Waktu EMP game mengubah lighting tiap frame (lampu kedip / mati), menutup layar
@@ -827,34 +830,40 @@ function World.isDarkening(fx)
     return ok and dark or false
 end
 
-local function isEmpGui(g)
-    return g:IsA("ScreenGui") and (EMP_GUIS[g.Name] == true or string.find(g.Name, "^Emp%u") ~= nil)
+-- Efek yang sudah kita matikan baru dilepas kalau benar-benar netral lagi (histeresis), supaya tween
+-- gelap -> normal di akhir EMP nggak bikin layar sempat redup di tengah jalan.
+function World.isNeutral(fx)
+    local ok, neutral = pcall(function()
+        return fx.Brightness >= -0.01 and luminance(fx.TintColor) >= 0.97
+    end)
+    return ok and neutral or false
 end
 
+-- Cuma overlay yang sudah terkonfirmasi. Pola nama yang lebih longgar bisa ikut menyembunyikan UI
+-- tombol / cooldown EMP milik pemain Mafia.
+local function isEmpGui(g)
+    return g:IsA("ScreenGui") and EMP_GUIS[g.Name] == true
+end
+
+-- Dipulihkan walaupun instance-nya lagi nggak punya parent (game bisa memasangnya lagi nanti).
 function World.restoreBlackout()
     for fx, enabled in pairs(World.heldFx) do
-        if fx.Parent then
-            pcall(function()
-                fx.Enabled = enabled
-            end)
-        end
+        pcall(function()
+            fx.Enabled = enabled
+        end)
         World.heldFx[fx] = nil
     end
     for g, enabled in pairs(World.heldGui) do
-        if g.Parent then
-            pcall(function()
-                g.Enabled = enabled
-            end)
-        end
+        pcall(function()
+            g.Enabled = enabled
+        end)
         World.heldGui[g] = nil
     end
 end
 
 function World.restoreAtmosphere()
     for a, saved in pairs(World.heldAtmo) do
-        if a.Parent then
-            writeProps(a, saved)
-        end
+        writeProps(a, saved)
         World.heldAtmo[a] = nil
     end
 end
@@ -886,14 +895,12 @@ local function blackoutStep()
             if fx:IsA("ColorCorrectionEffect") then
                 local held = World.heldFx[fx]
                 if held ~= nil then
-                    -- Sudah kita matikan: lepas lagi begitu game berhenti menggelapkan.
-                    if World.isDarkening(fx) then
-                        if fx.Enabled then
-                            fx.Enabled = false
-                        end
-                    else
+                    -- Sudah kita matikan: lepas lagi begitu game benar-benar berhenti menggelapkan.
+                    if World.isNeutral(fx) then
                         fx.Enabled = held
                         World.heldFx[fx] = nil
+                    elseif fx.Enabled then
+                        fx.Enabled = false
                     end
                 elseif fx.Enabled and World.isDarkening(fx) then
                     World.heldFx[fx] = true
@@ -1218,7 +1225,7 @@ UI.toggle(Pages.roles, "Alert when voted", "Warns you the moment someone votes f
 end)
 UI.button(Pages.roles, "Reset round evidence", "Clears everything learned this round. Happens automatically when a new round starts.", function()
     pcall(Intel.reset, "manual")
-    pcall(Votes.reset)
+    pcall(Votes.clearAll)
     notify("Roles", "Evidence cleared", nil, 2)
 end, { action = "Reset" })
 UI.section(Pages.roles, "Votes")
@@ -1755,7 +1762,7 @@ safe(Net.start, {
         end
     end,
     round = function()
-        pcall(Votes.reset)
+        pcall(Votes.clearAll)
     end,
 })
 safe(Votes.start)
