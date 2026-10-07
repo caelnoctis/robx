@@ -31,6 +31,7 @@ run "module actions+net"   node modtest.mjs modules/test_actions_net.lua Actions
 run "module actions seat"  node modtest.mjs modules/test_actions_seat.lua ActionsFactory=$ROOT/src/modules/actions.lua
 run "module inspector"     node modtest.mjs modules/test_inspector.lua Inspector=$ROOT/src/inspector.lua
 run "module inspector+net" node modtest.mjs modules/test_inspector_net.lua Inspector=$ROOT/src/inspector.lua
+run "module inspector light" node modtest.mjs modules/test_inspector_light.lua Inspector=$ROOT/src/inspector.lua
 run "smoke ui (stubs)"     node smoke.mjs .debug/NoctisENIX_stub.lua smoke_main.lua
 run "smoke real modules"   node smoke.mjs $ROOT/NoctisENIX.lua smoke_real.lua smoke_world.lua
 exit $fail

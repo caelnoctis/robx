@@ -14,13 +14,17 @@
       3. Save (file + clipboard), kirim file-nya
     File: <folder workspace executor>/NoctisENIX/inspector_<PlaceId>_<time>.txt
 
+    Layar gelap waktu EMP: Start live log, tunggu sampai ada EMP, lalu Save. Section LIGHTING +
+    baris LIGHT di live log menunjukkan apa yang EMP ubah (Lighting, efek, ScreenGui Emp*).
+    Bagian LIGHTING murni baca: tidak menulis property, tidak memanggil remote, tidak require.
+
     API: (getgenv() or _G).NoctisENIX_Inspector =
          { snapshot, startLive, stopLive, save, text, lines, unload }
     Tidak ada HTTP sama sekali. Satu-satunya tulis file: Save.
     Snapshot me-require ModuleScript game (identity 2); controller bisa punya efek samping.
 ]]
 
-local VERSION = "1.1.0"
+local VERSION = "1.2.0"
 
 local genv = _G
 if type(getgenv) == "function" then
@@ -129,6 +133,11 @@ local St = own({
     guiPrev = nil,
     guiTick = own({}),
     errs = {},
+    -- LIGHT: record coalescing per [instance][property] + record yang masih menunggu baris penutup
+    lightCo = own(setmetatable({}, { __mode = "k" })),
+    lightPend = own({}),
+    lightN = 0,
+    lightCapped = false,
     last = nil,
     lastSave = nil,
     savedMark = 0,
@@ -150,6 +159,43 @@ local TREE_CAP, TREE_DEPTH = 4000, 8
 local REMOTE_GRACE = 5
 -- animasi gerak (default Animate / looped Core-Idle-Movement): satu baris per pemain+id per N dtk
 local MOVE_DEDUPE = 10
+
+-- LIGHT (v1.2.0): fullbright kalah waktu EMP. Yang dicatat: property Lighting, efek di Lighting /
+-- CurrentCamera, dan ScreenGui Emp* (EmpInk, EmpAfterimage). Tween nembak tiap frame, jadi per
+-- instance+property maksimal satu baris per LIGHT_COALESCE dtk; update yang dilewati dihitung.
+local LIGHT_COALESCE = 0.25
+-- kuota emit() per sumber LIGHT per RATE_WINDOW (coalescing sudah membatasi ~4 baris/dtk)
+local LIGHT_RATE_MAX = 60
+-- maksimal instance yang di-hook property-nya (Lighting + efek + isi gui Emp*)
+local LIGHT_HOOK_CAP = 600
+local EMP_GUI_HOOK_CAP = 200
+local EMP_TREE_CAP, EMP_TREE_DEPTH = 40, 3
+local LIGHT_SCAN_CAP = 20000
+local LIGHT_PROPS = {
+    "Brightness", "ClockTime", "Ambient", "OutdoorAmbient", "ColorShift_Top", "ColorShift_Bottom",
+    "EnvironmentDiffuseScale", "EnvironmentSpecularScale", "ExposureCompensation", "FogColor", "FogStart", "FogEnd",
+    "GlobalShadows", "Technology", "ShadowSoftness",
+}
+-- Property kunci per class anak Lighting / CurrentCamera.
+local FX_PROPS = {
+    ColorCorrectionEffect = { "Enabled", "Brightness", "Contrast", "Saturation", "TintColor" },
+    BlurEffect = { "Enabled", "Size" },
+    BloomEffect = { "Enabled", "Intensity", "Size", "Threshold" },
+    DepthOfFieldEffect = { "Enabled", "FarIntensity", "FocusDistance", "InFocusRadius", "NearIntensity" },
+    SunRaysEffect = { "Enabled", "Intensity", "Spread" },
+    ColorGradingEffect = { "Enabled", "TonemapperPreset" },
+    Atmosphere = { "Density", "Offset", "Color", "Decay", "Glare", "Haze" },
+    Sky = { "CelestialBodiesShown", "StarCount", "SunAngularSize", "MoonAngularSize", "SkyboxBk" },
+    Clouds = { "Enabled", "Cover", "Density", "Color" },
+}
+local LIGHT_CLS = { PointLight = true, SpotLight = true, SurfaceLight = true }
+local LIGHT_INST_PROPS = { "Enabled", "Brightness", "Range", "Color" }
+-- Dibaca di pohon gui Emp* (snapshot + baris DescendantAdded); yang tidak ada di class itu dilewati.
+local EMP_TREE_PROPS = {
+    "Visible", "BackgroundTransparency", "ImageTransparency", "BackgroundColor3", "ImageColor3",
+    "GroupTransparency", "TextTransparency", "Size", "Image",
+}
+local IMAGE_CLS = { ImageLabel = true, ImageButton = true }
 
 local MODULE_PATHS = {
     "shared.configurations.roles",
@@ -1212,6 +1258,117 @@ local function connDesc(c)
 end
 
 ----------------------------------------------------------------------
+-- Lighting / EMP: helper baca saja (tidak pernah menulis property)
+----------------------------------------------------------------------
+-- "k=v k=v" untuk property yang ada; property yang error / nil / ternyata anak bernama sama dilewati.
+local function propsInline(inst, list)
+    local parts = {}
+    for _, k in ipairs(list) do
+        local ok, v = pcall(getp, inst, k)
+        if ok and v ~= nil and typeof(v) ~= "Instance" then
+            parts[#parts + 1] = k .. "=" .. show(v)
+        end
+    end
+    return table.concat(parts, " ")
+end
+
+-- Property yang dipantau untuk anak Lighting / CurrentCamera (nil = class tidak menarik).
+local function fxPropList(c)
+    local cls = prop(c, "ClassName")
+    if FX_PROPS[cls] then
+        return FX_PROPS[cls]
+    end
+    if LIGHT_CLS[cls] then
+        return LIGHT_INST_PROPS
+    end
+    if isA(c, "PostEffect") then
+        return { "Enabled" }
+    end
+    if isA(c, "ValueBase") then
+        return { "Value" }
+    end
+    return nil
+end
+
+-- Property yang dipantau di dalam ScreenGui Emp* (per class, biar tidak connect ke property yang tidak ada).
+local function guiPropList(d)
+    local cls = prop(d, "ClassName")
+    if LAYER[cls] then
+        return { "Enabled" }
+    end
+    if cls == "UIGradient" then
+        return { "Enabled", "Offset", "Transparency" }
+    end
+    if not GUIOBJ[cls] then
+        return nil
+    end
+    local list = { "Visible", "BackgroundTransparency", "BackgroundColor3" }
+    if IMAGE_CLS[cls] then
+        list[#list + 1] = "ImageTransparency"
+        list[#list + 1] = "ImageColor3"
+    elseif TEXTCLS[cls] then
+        list[#list + 1] = "TextTransparency"
+    elseif cls == "CanvasGroup" then
+        list[#list + 1] = "GroupTransparency"
+        list[#list + 1] = "GroupColor3"
+    end
+    return list
+end
+
+local function fxLine(c)
+    local s = tostring(prop(c, "Name")) .. " [" .. tostring(prop(c, "ClassName")) .. "]"
+    local list = fxPropList(c)
+    local p = list and propsInline(c, list) or ""
+    if p ~= "" then
+        s = s .. " " .. p
+    end
+    local a = attrsInline(c, 10)
+    if a ~= "" then
+        s = s .. " {" .. a .. "}"
+    end
+    return s
+end
+
+-- ScreenGui yang namanya diawali "Emp" (huruf besar/kecil bebas): EmpInk, EmpAfterimage, ...
+local function isEmpGui(g)
+    if not isA(g, "ScreenGui") then
+        return false
+    end
+    return string.find(string.lower(tostring(prop(g, "Name"))), "^emp") ~= nil
+end
+
+local function empGuiLine(g)
+    return tostring(prop(g, "Name")) .. " [" .. tostring(prop(g, "ClassName")) .. "] Enabled=" .. tostring(prop(g, "Enabled"))
+        .. " DisplayOrder=" .. tostring(prop(g, "DisplayOrder")) .. " IgnoreGuiInset=" .. tostring(prop(g, "IgnoreGuiInset"))
+        .. " ResetOnSpawn=" .. tostring(prop(g, "ResetOnSpawn")) .. " descendants=" .. #descendants(g)
+end
+
+local function empTree(out, node, depth, budget)
+    for _, c in ipairs(children(node)) do
+        if budget.n >= EMP_TREE_CAP then
+            budget.cut = true
+            return
+        end
+        budget.n = budget.n + 1
+        local p = propsInline(c, EMP_TREE_PROPS)
+        out(string.rep("  ", depth + 1) .. tostring(prop(c, "Name")) .. " [" .. tostring(prop(c, "ClassName")) .. "]" .. (p ~= "" and (" " .. p) or ""))
+        if depth < EMP_TREE_DEPTH then
+            empTree(out, c, depth + 1, budget)
+            if budget.cut then
+                return
+            end
+        end
+    end
+end
+
+local function lightLabel(inst)
+    if inst == Lighting then
+        return "Lighting"
+    end
+    return fullName(inst) .. " [" .. tostring(prop(inst, "ClassName")) .. "]"
+end
+
+----------------------------------------------------------------------
 -- Live log: ring buffer + rate limit
 ----------------------------------------------------------------------
 local function push(line)
@@ -2023,6 +2180,204 @@ function L.guiScan()
     end
 end
 
+-- LIGHT: coalescing per instance+property. Record kind "prop" (nilai dibaca ulang saat ditulis)
+-- atau "event" (fmt(obj) kejadian terakhir, baru diformat saat ditulis: burst DescendantAdded murah).
+-- Update dalam LIGHT_COALESCE dtk sejak baris terakhir dilewati dan dihitung; baris berikutnya
+-- (update baru atau flush dari Heartbeat) menyebut jumlahnya.
+local function coRec(inst, key, kind, fmt)
+    local per = St.lightCo[inst]
+    if per == nil then
+        per = own({})
+        St.lightCo[inst] = per
+    end
+    local c = per[key]
+    if c == nil then
+        c = own({ inst = inst, key = key, kind = kind, fmt = fmt, t = -1e9, skip = 0 })
+        if kind == "prop" then
+            c.last = prop(inst, key)
+        end
+        per[key] = c
+    end
+    return c
+end
+
+local function coEmit(c, t)
+    St.lightPend[c] = nil
+    local label = lightLabel(c.inst)
+    local text
+    if c.kind == "prop" then
+        local v = prop(c.inst, c.key)
+        text = label .. " " .. c.key .. " = " .. show(v) .. "  (was " .. show(c.last) .. ")"
+        c.last = v
+    else
+        local okF, s = pcall(c.fmt, c.obj)
+        text = label .. " " .. (okF and tostring(s) or ("? (" .. tostring(s) .. ")"))
+    end
+    if c.skip > 0 then
+        text = text .. "  (+" .. c.skip .. " updates coalesced)"
+    end
+    c.t, c.skip = t, 0
+    emit("LIGHT", "LIGHT:" .. label .. ":" .. c.key, text, LIGHT_RATE_MAX)
+end
+
+-- obj: subjek kejadian terbaru (record "event"); nil untuk record "prop".
+local function coHit(c, obj)
+    if obj ~= nil then
+        c.obj = obj
+    end
+    local t = now()
+    if t - c.t < LIGHT_COALESCE then
+        c.skip = c.skip + 1
+        St.lightPend[c] = true
+        return
+    end
+    coEmit(c, t)
+end
+
+-- Tulis baris penutup untuk update yang dilewati (window sudah lewat, atau semua kalau force).
+function L.lightFlush(force)
+    local t = now()
+    local due = {}
+    for c in pairs(St.lightPend) do
+        if force or t - c.t >= LIGHT_COALESCE then
+            due[#due + 1] = c
+        end
+    end
+    for _, c in ipairs(due) do
+        coEmit(c, t)
+    end
+end
+
+-- Hook daftar property satu instance (sekali per instance, total dibatasi LIGHT_HOOK_CAP).
+function L.lightInst(inst, list)
+    if typeof(inst) ~= "Instance" or type(list) ~= "table" then
+        return
+    end
+    if St.lightN >= LIGHT_HOOK_CAP then
+        if not St.lightCapped then
+            St.lightCapped = true
+            emit("LIGHT", "LIGHTCAP", "hook cap reached (" .. LIGHT_HOOK_CAP .. " instances); later Lighting / Emp* instances are not watched", LIGHT_RATE_MAX)
+        end
+        return
+    end
+    if not once(inst, "light") then
+        return
+    end
+    St.lightN = St.lightN + 1
+    for _, k in ipairs(list) do
+        local sig = propSig(inst, k)
+        if sig ~= nil then
+            local c = coRec(inst, k, "prop")
+            on(St.liveConns, sig, function()
+                coHit(c)
+            end, "light " .. k)
+        end
+    end
+end
+
+-- Lighting / CurrentCamera: anak yang ada sekarang (baris "baseline"), anak baru / hilang, property efek.
+function L.lightBox(box, why)
+    if typeof(box) ~= "Instance" or not once(box, "lightbox") then
+        return
+    end
+    local bname = fullName(box)
+    local kids = children(box)
+    if #kids == 0 then
+        emit("LIGHT", "LIGHTBASE:" .. bname, why .. " " .. bname .. ": no children", LIGHT_RATE_MAX)
+    end
+    for i, c in ipairs(kids) do
+        if i > 30 then
+            emit("LIGHT", "LIGHTBASE:" .. bname, why .. " " .. bname .. " child: ... +" .. (#kids - 30) .. " more", LIGHT_RATE_MAX)
+            break
+        end
+        emit("LIGHT", "LIGHTBASE:" .. bname, why .. " " .. bname .. " child: " .. fxLine(c), LIGHT_RATE_MAX)
+    end
+    for _, c in ipairs(kids) do
+        L.lightInst(c, fxPropList(c))
+    end
+    on(St.liveConns, prop(box, "ChildAdded"), function(c)
+        emit("LIGHT", "LIGHTCHILD:" .. bname, "+ " .. fxLine(c) .. " in " .. bname, LIGHT_RATE_MAX)
+        L.lightInst(c, fxPropList(c))
+    end, "light child+")
+    on(St.liveConns, prop(box, "ChildRemoved"), function(c)
+        emit("LIGHT", "LIGHTCHILD:" .. bname, "- " .. tostring(prop(c, "Name")) .. " [" .. tostring(prop(c, "ClassName")) .. "] from " .. bname, LIGHT_RATE_MAX)
+    end, "light child-")
+end
+
+-- Satu ScreenGui Emp*: Enabled/DisplayOrder, Visible/transparansi/warna isinya, dan isi baru.
+function L.empGui(g, why)
+    if typeof(g) ~= "Instance" or not once(g, "empgui") then
+        return
+    end
+    local gname = tostring(prop(g, "Name"))
+    emit("LIGHT", "LIGHTGUI:" .. gname, why .. " gui " .. empGuiLine(g), LIGHT_RATE_MAX)
+    L.lightInst(g, { "Enabled", "DisplayOrder" })
+    local n = 0
+    local function hookDesc(d)
+        local list = guiPropList(d)
+        if list and n < EMP_GUI_HOOK_CAP then
+            n = n + 1
+            L.lightInst(d, list)
+        end
+    end
+    for _, d in ipairs(descendants(g)) do
+        hookDesc(d)
+    end
+    local added = coRec(g, "DescendantAdded", "event", function(d)
+        local p = propsInline(d, EMP_TREE_PROPS)
+        return "+ " .. tostring(prop(d, "Name")) .. " [" .. tostring(prop(d, "ClassName")) .. "]" .. (p ~= "" and (" " .. p) or "")
+    end)
+    on(St.liveConns, prop(g, "DescendantAdded"), function(d)
+        coHit(added, d)
+        hookDesc(d)
+    end, "emp gui desc+")
+end
+
+function L.empGuis()
+    local pg = childOfClass(LocalPlayer, "PlayerGui")
+    if not pg then
+        emit("LIGHT", "LIGHTGUI", "PlayerGui not found; Emp* guis not hooked", LIGHT_RATE_MAX)
+        return
+    end
+    local n = 0
+    for _, g in ipairs(children(pg)) do
+        if isEmpGui(g) then
+            n = n + 1
+            L.empGui(g, "baseline")
+        end
+    end
+    if n == 0 then
+        emit("LIGHT", "LIGHTGUI", "baseline: no Emp* ScreenGui in PlayerGui yet", LIGHT_RATE_MAX)
+    end
+    -- ScreenGui ResetOnSpawn dibuat ulang tiap respawn
+    on(St.liveConns, prop(pg, "ChildAdded"), function(g)
+        if isEmpGui(g) then
+            L.empGui(g, "+")
+        end
+    end, "emp gui+")
+    on(St.liveConns, prop(pg, "ChildRemoved"), function(g)
+        if isEmpGui(g) then
+            local gname = tostring(prop(g, "Name"))
+            emit("LIGHT", "LIGHTGUI:" .. gname, "- gui " .. gname .. " removed from PlayerGui", LIGHT_RATE_MAX)
+        end
+    end, "emp gui-")
+end
+
+function L.lighting()
+    if Lighting then
+        emit("LIGHT", "LIGHTBASE:Lighting", "baseline Lighting " .. propsInline(Lighting, LIGHT_PROPS), LIGHT_RATE_MAX)
+        L.lightInst(Lighting, LIGHT_PROPS)
+        L.lightBox(Lighting, "baseline")
+    end
+    L.lightBox(prop(Workspace, "CurrentCamera"), "baseline")
+    on(St.liveConns, propSig(Workspace, "CurrentCamera"), function()
+        local cam = prop(Workspace, "CurrentCamera")
+        emit("LIGHT", "LIGHTCAM", "CurrentCamera -> " .. fullName(cam), LIGHT_RATE_MAX)
+        L.lightBox(cam, "new camera")
+    end, "light camera")
+    L.empGuis()
+end
+
 ----------------------------------------------------------------------
 -- Snapshot sections: { key, title, fn(out, X) }
 ----------------------------------------------------------------------
@@ -2701,6 +3056,128 @@ local SECTIONS = {
             end
         end
     end },
+    { "lighting", "LIGHTING (Lighting, Camera effects, Emp* ScreenGuis, lights; read-only)", function(out, X)
+        if Lighting then
+            out("Lighting properties:")
+            for _, k in ipairs(LIGHT_PROPS) do
+                local ok, v = pcall(getp, Lighting, k)
+                out("  " .. k .. " = " .. (ok and show(v) or ("? (" .. string.sub(tostring(v), 1, 80) .. ")")))
+            end
+            attrLine(out, "Lighting attrs: ", Lighting)
+        else
+            out("Lighting: service not found")
+        end
+        -- anak Lighting / CurrentCamera (+ satu tingkat cucu) dengan property kuncinya
+        local function listBox(label, box)
+            if not box then
+                out(label .. ": not found")
+                return
+            end
+            local kids = children(box)
+            out(label .. " children: " .. #kids)
+            for i, c in ipairs(kids) do
+                if i > 60 then
+                    out("  ... +" .. (#kids - 60) .. " more")
+                    break
+                end
+                out("  " .. fxLine(c))
+                local sub = children(c)
+                for j, s in ipairs(sub) do
+                    if j > 8 then
+                        out("    ... +" .. (#sub - 8) .. " more")
+                        break
+                    end
+                    out("    " .. fxLine(s))
+                end
+            end
+        end
+        listBox("Lighting", Lighting)
+        local cam = prop(Workspace, "CurrentCamera")
+        listBox("CurrentCamera " .. fullName(cam), cam)
+        -- ScreenGui Emp* (aktif terus waktu idle; frame-nya yang dianimasikan saat EMP)
+        local pg = childOfClass(LocalPlayer, "PlayerGui")
+        local emps = {}
+        for _, g in ipairs(children(pg)) do
+            if isEmpGui(g) then
+                emps[#emps + 1] = g
+            end
+        end
+        out("Emp* ScreenGuis in PlayerGui: " .. #emps .. (pg and "" or " (PlayerGui not found)"))
+        for _, g in ipairs(emps) do
+            out("gui " .. empGuiLine(g))
+            local budget = { n = 0, cut = false }
+            empTree(out, g, 1, budget)
+            if budget.cut then
+                out("    ... tree cap " .. EMP_TREE_CAP .. " nodes")
+            end
+        end
+        -- Remote EMP game: cuma daftar + listener client (getconnections); tidak pernah dipanggil / di-connect
+        local SN = findChild(ReplicatedStorage, "ServiceNetworks")
+        local empSvc = SN and findChild(SN, "empService")
+        if not empSvc then
+            out("ServiceNetworks.empService: not found")
+        else
+            for _, r in ipairs(children(empSvc)) do
+                local line = "empService." .. tostring(prop(r, "Name")) .. " [" .. tostring(prop(r, "ClassName")) .. "] (not called)"
+                local conns = nil
+                if EVENT_CLS[prop(r, "ClassName")] and type(getconnections) == "function" then
+                    local sig = prop(r, "OnClientEvent")
+                    local okC, list = pcall(getconnections, sig)
+                    if sig ~= nil and okC and type(list) == "table" then
+                        conns = list
+                        line = line .. " client listeners: " .. #list
+                    end
+                end
+                out(line)
+                if conns then
+                    for i, c in ipairs(conns) do
+                        if i > 5 then
+                            out("    ...")
+                            break
+                        end
+                        out("    #" .. i .. " " .. connDesc(c))
+                    end
+                end
+            end
+        end
+        -- Light di workspace (EMP mematikan senter / lampu); scan dibatasi LIGHT_SCAN_CAP descendant
+        local list = X.ws()
+        local total = #list
+        local scanN = math.min(total, LIGHT_SCAN_CAP)
+        local cnt, en = {}, {}
+        local charN, charEn, charLines = 0, 0, {}
+        for i = 1, scanN do
+            local d = list[i]
+            local cls = d.ClassName
+            if LIGHT_CLS[cls] then
+                cnt[cls] = (cnt[cls] or 0) + 1
+                local isOn = prop(d, "Enabled") == true
+                if isOn then
+                    en[cls] = (en[cls] or 0) + 1
+                end
+                local owner = playerOf(d)
+                if owner then
+                    charN = charN + 1
+                    if isOn then
+                        charEn = charEn + 1
+                    end
+                    if #charLines < 10 then
+                        charLines[#charLines + 1] = fullName(d) .. " [" .. cls .. "] " .. propsInline(d, LIGHT_INST_PROPS) .. " [" .. pname(owner) .. "]"
+                    end
+                end
+            end
+        end
+        local parts = {}
+        for _, cls in ipairs({ "PointLight", "SpotLight", "SurfaceLight" }) do
+            parts[#parts + 1] = cls .. " x" .. (cnt[cls] or 0) .. " (enabled " .. (en[cls] or 0) .. ")"
+        end
+        out("lights in workspace: " .. table.concat(parts, ", ") .. "; scanned " .. scanN .. " of " .. total .. " descendants"
+            .. (total > scanN and (" (cap " .. LIGHT_SCAN_CAP .. ")") or ""))
+        out("lights inside player characters: " .. charN .. " (enabled " .. charEn .. ")")
+        for _, s in ipairs(charLines) do
+            out("  " .. s)
+        end
+    end },
     { "network", "GAME NETWORK (ServiceNetworks / RoleNetworks getters)", function(out, X)
         local SN = findChild(ReplicatedStorage, "ServiceNetworks")
         local RN = findChild(ReplicatedStorage, "RoleNetworks")
@@ -2971,6 +3448,7 @@ function API.startLive()
             St.guiPrev = nil
             L.guiScan()
         end },
+        { "lighting", L.lighting },
     }
     for _, s in ipairs(steps) do
         local ok, err = pcall(s[2])
@@ -2990,6 +3468,11 @@ function API.stopLive()
     if not St.live then
         return true, "not running"
     end
+    -- nilai akhir tween yang masih ditahan coalescing ditulis dulu
+    local okF, errF = pcall(L.lightFlush, true)
+    if not okF then
+        noteErr("light flush", errF)
+    end
     flushRate(true)
     push(stamp() .. " LIVE stopped")
     St.live = false
@@ -3004,6 +3487,10 @@ function API.stopLive()
     St.tagN, St.remoteN = 0, 0
     St.remoteWait = own(setmetatable({}, { __mode = "k" }))
     St.guiPrev = nil
+    St.lightCo = own(setmetatable({}, { __mode = "k" }))
+    St.lightPend = own({})
+    St.lightN = 0
+    St.lightCapped = false
     local hs = genv.NoctisENIX_InspectorHook
     if type(hs) == "table" and hs.sink == St.sinkFn then
         hs.sink = nil
@@ -3039,6 +3526,8 @@ function API.text()
     add("note: the module probe requires game ModuleScripts; requiring controllers can have side effects.")
     add("note: REMOTE_IN connects a remote only once the game listens to it (getconnections) or " .. REMOTE_GRACE
         .. "s after it appears, so events queued for late game listeners still reach the game.")
+    add("note: LIGHT lines (Lighting, Lighting/Camera effects, Emp* ScreenGuis) log at most one line per instance+property per "
+        .. LIGHT_COALESCE .. "s; '(+N updates coalesced)' = N changes folded into that line, which shows the current value.")
     add("")
     if #St.snaps == 0 then
         add("(no snapshot taken)")
@@ -3350,6 +3839,13 @@ on(St.uiConns, prop(RunService, "Heartbeat"), function()
     end
     local t = now()
     if St.live then
+        -- baris penutup LIGHT begitu window coalescing lewat (nilai akhir tween tidak hilang)
+        if next(St.lightPend) ~= nil then
+            local okL, errL = pcall(L.lightFlush, false)
+            if not okL then
+                noteErr("light flush", errL)
+            end
+        end
         if t - St.tGui >= 2 then
             St.tGui = t
             local okG, errG = pcall(L.guiScan)

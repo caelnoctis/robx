@@ -1,4 +1,4 @@
-import { LuauState } from "luau-web";
+import { LuauState } from "./luau.mjs";
 import fs from "node:fs";
 const file = process.argv[2];
 const src = fs.readFileSync(file, "utf8");

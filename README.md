@@ -21,7 +21,8 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 1. Jalankan **saat sudah di dalam match**, lalu tekan **Snapshot**. Section **GAME NETWORK** memanggil getter baca-saja milik game (role, teamMembers, gamePhase, dan sejenisnya) untuk melihat format balasannya. Remote aksi seperti `onStab` tidak pernah dipanggil Inspector. Section **DECOMPILE** membaca kode modul role client (tanpa menjalankannya) supaya argumen asli `onStab` / `onHeal` kelihatan.
 2. Tekan **Start live log**, lalu main satu ronde penuh: malam, ada yang ditusuk, ada yang di-heal, meeting, voting. Kalau bisa, sekali jadi Mafia dan sekali jadi role lain.
 3. Tekan **Save**. Hasilnya tersimpan di folder `workspace/NoctisENIX/` milik Xeno (dan ikut tersalin ke clipboard).
-4. Kirim file `.txt` itu. Isinya struktur modul game, config role, attribute, animasi, remote, dan log kejadian selama ronde, jadi deteksi role dan fitur aksi bisa dicocokkan dengan nama-nama asli game.
+4. Kalau layar tetap gelap waktu EMP walaupun Fullbright nyala: **Start live log**, tunggu sampai ada EMP, lalu **Save**. Section **LIGHTING** dan baris `LIGHT` di live log menunjukkan apa saja yang diubah EMP (property Lighting, efek di Lighting / Camera, ScreenGui `EmpInk` / `EmpAfterimage`, lampu). Bagian ini cuma membaca, tidak menulis apa pun ke game.
+5. Kirim file `.txt` itu. Isinya struktur modul game, config role, attribute, animasi, remote, dan log kejadian selama ronde, jadi deteksi role dan fitur aksi bisa dicocokkan dengan nama-nama asli game.
 
 ## Fitur
 

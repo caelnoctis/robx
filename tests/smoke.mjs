@@ -1,5 +1,5 @@
 // Usage: node smoke.mjs [../NoctisENIX.lua] [smoke_main.lua] [world.lua]
-import { LuauState } from "luau-web";
+import { LuauState } from "./luau.mjs";
 import fs from "node:fs";
 import path from "node:path";
 const here = path.dirname(new URL(import.meta.url).pathname);

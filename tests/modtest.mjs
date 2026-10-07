@@ -1,6 +1,6 @@
 // Usage: node modtest.mjs <test.lua> [FactoryName=path/to/module.lua ...]
 // Menyusun: prelude + __GameFactory (game_api.lua) + factory modul + ctx_mock + test, lalu jalanin di Luau (luau-web).
-import { LuauState } from "luau-web";
+import { LuauState } from "./luau.mjs";
 import fs from "node:fs";
 import path from "node:path";
 const here = path.dirname(new URL(import.meta.url).pathname);
