@@ -247,7 +247,10 @@ local Defaults = {
     TextButton = { AbsolutePosition = Vector2.new(0, 0), AbsoluteSize = Vector2.new(200, 10), Text = "" },
     TextLabel = { Text = "" },
     ProximityPrompt = { HoldDuration = 1 },
-    Lighting = { Brightness = 1, ClockTime = 6, FogEnd = 900, GlobalShadows = true, Ambient = Color3.new(0, 0, 0), OutdoorAmbient = Color3.new(0, 0, 0) },
+    Lighting = { Brightness = 1, ClockTime = 6, FogEnd = 900, FogStart = 0, GlobalShadows = true, Ambient = Color3.new(0, 0, 0), OutdoorAmbient = Color3.new(0, 0, 0), ExposureCompensation = 0 },
+    ColorCorrectionEffect = { Enabled = true, Brightness = 0, Contrast = 0, Saturation = 0, TintColor = Color3.new(1, 1, 1) },
+    Atmosphere = { Density = 0.395, Haze = 0, Offset = 0 },
+    ScreenGui = { Enabled = true },
     Camera = { FieldOfView = 70, CFrame = CFrame.new(0, 10, 0) },
 }
 

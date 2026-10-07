@@ -32,7 +32,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.3.0",
+    Version = "2.3.1",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -672,38 +672,172 @@ end)
 ----------------------------------------------------------------------
 -- World
 ----------------------------------------------------------------------
-local World = { saved = nil, origHold = setmetatable({}, { __mode = "k" }) }
+local World = {
+    savedLight = nil,
+    savedFog = nil,
+    origHold = setmetatable({}, { __mode = "k" }),
+    heldFx = setmetatable({}, { __mode = "k" }), -- [ColorCorrectionEffect] = Enabled asli
+    heldGui = setmetatable({}, { __mode = "k" }), -- [ScreenGui EMP] = Enabled asli
+    heldAtmo = setmetatable({}, { __mode = "k" }), -- [Atmosphere] = { Density, Haze } asli
+}
+
+-- Fullbright. Waktu EMP game mengubah lighting tiap frame (lampu kedip / mati), menutup layar
+-- lewat ScreenGui EmpInk / EmpAfterimage di PlayerGui, dan bisa menggelapkan lewat ColorCorrection.
+-- Jadi nilai kita ditulis di render step paling akhir (sesudah script game), overlay EMP dimatikan
+-- lokal, dan ColorCorrection yang menggelapkan dimatikan selama fullbright menyala.
+local FULLBRIGHT = {
+    Brightness = 2,
+    ClockTime = 14,
+    GlobalShadows = false,
+    Ambient = Color3.fromRGB(178, 178, 178),
+    OutdoorAmbient = Color3.fromRGB(178, 178, 178),
+    ExposureCompensation = 0,
+}
+local FOG = { FogEnd = 1e6, FogStart = 1e6 }
+local EMP_GUIS = { EmpInk = true, EmpAfterimage = true }
+
+local function readProps(inst, props)
+    local out = {}
+    for k in pairs(props) do
+        local ok, v = pcall(function()
+            return inst[k]
+        end)
+        if ok and v ~= nil then
+            out[k] = v
+        end
+    end
+    return out
+end
+
+local function writeProps(inst, values)
+    for k, v in pairs(values) do
+        pcall(function()
+            if inst[k] ~= v then
+                inst[k] = v
+            end
+        end)
+    end
+end
+
+local function luminance(c)
+    return 0.299 * c.R + 0.587 * c.G + 0.114 * c.B
+end
+
+-- ColorCorrection yang bikin gelap (Brightness negatif atau tint gelap). Yang cuma ngatur warna dibiarkan.
+function World.isDarkening(fx)
+    local ok, dark = pcall(function()
+        return fx.Brightness < -0.05 or luminance(fx.TintColor) < 0.8
+    end)
+    return ok and dark or false
+end
+
+local function isEmpGui(g)
+    return g:IsA("ScreenGui") and (EMP_GUIS[g.Name] == true or string.find(g.Name, "^Emp%u") ~= nil)
+end
+
+function World.restoreBlackout()
+    for fx, enabled in pairs(World.heldFx) do
+        if fx.Parent then
+            pcall(function()
+                fx.Enabled = enabled
+            end)
+        end
+        World.heldFx[fx] = nil
+    end
+    for g, enabled in pairs(World.heldGui) do
+        if g.Parent then
+            pcall(function()
+                g.Enabled = enabled
+            end)
+        end
+        World.heldGui[g] = nil
+    end
+end
+
+function World.restoreAtmosphere()
+    for a, saved in pairs(World.heldAtmo) do
+        if a.Parent then
+            writeProps(a, saved)
+        end
+        World.heldAtmo[a] = nil
+    end
+end
 
 function World.refreshLighting()
-    if S.fullbright or S.noFog then
-        if not World.saved then
-            World.saved = {
-                Brightness = Lighting.Brightness,
-                ClockTime = Lighting.ClockTime,
-                FogEnd = Lighting.FogEnd,
-                GlobalShadows = Lighting.GlobalShadows,
-                Ambient = Lighting.Ambient,
-                OutdoorAmbient = Lighting.OutdoorAmbient,
-            }
+    if S.fullbright then
+        World.savedLight = World.savedLight or readProps(Lighting, FULLBRIGHT)
+    else
+        if World.savedLight then
+            writeProps(Lighting, World.savedLight)
+            World.savedLight = nil
         end
-    elseif World.saved then
-        for k, v in pairs(World.saved) do
-            Lighting[k] = v
+        World.restoreBlackout()
+    end
+    if S.noFog then
+        World.savedFog = World.savedFog or readProps(Lighting, FOG)
+    else
+        if World.savedFog then
+            writeProps(Lighting, World.savedFog)
+            World.savedFog = nil
         end
-        World.saved = nil
+        World.restoreAtmosphere()
+    end
+end
+
+local function blackoutStep()
+    for _, parent in ipairs({ Lighting, getCamera() }) do
+        for _, fx in ipairs(parent:GetChildren()) do
+            if fx:IsA("ColorCorrectionEffect") then
+                local held = World.heldFx[fx]
+                if held ~= nil then
+                    -- Sudah kita matikan: lepas lagi begitu game berhenti menggelapkan.
+                    if World.isDarkening(fx) then
+                        if fx.Enabled then
+                            fx.Enabled = false
+                        end
+                    else
+                        fx.Enabled = held
+                        World.heldFx[fx] = nil
+                    end
+                elseif fx.Enabled and World.isDarkening(fx) then
+                    World.heldFx[fx] = true
+                    fx.Enabled = false
+                end
+            end
+        end
+    end
+    local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if pg then
+        for _, g in ipairs(pg:GetChildren()) do
+            if isEmpGui(g) and g.Enabled then
+                if World.heldGui[g] == nil then
+                    World.heldGui[g] = true
+                end
+                g.Enabled = false
+            end
+        end
+    end
+end
+
+local function fogStep()
+    for _, a in ipairs(Lighting:GetChildren()) do
+        if a:IsA("Atmosphere") then
+            if not World.heldAtmo[a] then
+                World.heldAtmo[a] = readProps(a, { Density = true, Haze = true })
+            end
+            writeProps(a, { Density = 0, Haze = 0 })
+        end
     end
 end
 
 function World.lightStep()
     if S.fullbright then
-        Lighting.Brightness = 2
-        Lighting.ClockTime = 14
-        Lighting.GlobalShadows = false
-        Lighting.Ambient = Color3.fromRGB(178, 178, 178)
-        Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
+        writeProps(Lighting, FULLBRIGHT)
+        blackoutStep()
     end
     if S.noFog then
-        Lighting.FogEnd = 1e6
+        writeProps(Lighting, FOG)
+        fogStep()
     end
 end
 
@@ -1221,11 +1355,11 @@ end
 
 -- World --------------------------------------------------------------
 UI.section(Pages.world, "Lighting")
-UI.toggle(Pages.world, "Fullbright", "Lights up the whole map so you can see everywhere clearly. Only you see the difference.", false, function(v)
+UI.toggle(Pages.world, "Fullbright", "Lights up the whole map, also during an EMP blackout (hides the EMP ink overlay and dark color filters). Only you see the difference.", false, function(v)
     S.fullbright = v
     World.refreshLighting()
 end, { bind = true, risk = "local" })
-UI.toggle(Pages.world, "No fog", nil, false, function(v)
+UI.toggle(Pages.world, "No fog", "Removes distance fog and the map's Atmosphere haze.", false, function(v)
     S.noFog = v
     World.refreshLighting()
 end, { risk = "local" })
@@ -1462,13 +1596,34 @@ safe(Net.start, {
     end,
 })
 
+-- Lighting ditulis di render step paling akhir (sesudah efek EMP game, sebelum kursor menu).
+do
+    local lightBind = "NoctisENIX_Light_" .. tostring(math.random(1000, 9999))
+    local function lightFrame()
+        if S.alive then
+            safeOnce(World.lightStep)
+        end
+    end
+    local bound = pcall(function()
+        RunService:BindToRenderStep(lightBind, Enum.RenderPriority.Last.Value + 40, lightFrame)
+    end)
+    if bound then
+        track(function()
+            pcall(function()
+                RunService:UnbindFromRenderStep(lightBind)
+            end)
+        end)
+    else
+        connect(RunService.RenderStepped, lightFrame)
+    end
+end
+
 local acc = { intel = 0, esp = 0, ui = 0 }
 connect(RunService.Heartbeat, function(dt)
     if not S.alive then
         return
     end
     safeOnce(Move.frameStep)
-    safeOnce(World.lightStep)
 
     acc.intel = acc.intel + dt
     if acc.intel >= 0.25 then

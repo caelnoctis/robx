@@ -113,6 +113,60 @@ clickPass()
 hb:Fire(0.3)
 check(not (S.speedOn or S.fly or S.noclip or S.fullbright), "toggles off after second pass")
 
+-- 3b. Fullbright tetap terang waktu EMP (v2.3.1)
+do
+    local L = __services.Lighting
+    local cam = workspace.CurrentCamera
+    local me = __players[1]
+    local pg = me:FindFirstChildOfClass("PlayerGui") or __mk("PlayerGui", { Name = "PlayerGui" }, me)
+    local dv = __mk("ColorCorrectionEffect", { Name = "DV" }, L)
+    local tint = __mk("ColorCorrectionEffect", { Name = "Tint", Saturation = -0.3 }, cam)
+    local atmo = __mk("Atmosphere", { Name = "Atmosphere", Density = 0.45, Haze = 1.5 }, L)
+    local ink = __mk("ScreenGui", { Name = "EmpInk" }, pg)
+    local after = __mk("ScreenGui", { Name = "EmpAfterimage" }, pg)
+    local hud = __mk("ScreenGui", { Name = "Hud" }, pg)
+    L.Brightness, L.ExposureCompensation = 0.5, -1
+    local fb = control("Fullbright", "Toggle")
+    click(fb)
+    check(S.fullbright == true, "fullbright on")
+    -- EMP: game menulis lighting gelap tiap frame + filter gelap + overlay
+    L.Brightness, L.ClockTime, L.ExposureCompensation = 0, 0, -3
+    L.Ambient = Color3.new(0, 0, 0)
+    dv.Brightness, dv.TintColor = -0.7, Color3.new(0.1, 0.1, 0.1)
+    __runRenderBinds()
+    check(L.Brightness == 2 and L.ClockTime == 14 and L.ExposureCompensation == 0, "fullbright wins over per-frame EMP lighting")
+    check(math.abs(L.Ambient.R - 178 / 255) < 0.01, "ambient lifted")
+    check(dv.Enabled == false, "darkening color correction disabled")
+    check(tint.Enabled == true, "plain color grading left alone")
+    check(ink.Enabled == false and after.Enabled == false, "EMP overlays hidden")
+    check(hud.Enabled == true, "other GUIs untouched")
+    check(atmo.Density == 0.45, "atmosphere untouched without No fog")
+    -- game nyalain lagi overlay di tengah EMP -> tetap kita matikan
+    ink.Enabled = true
+    __runRenderBinds()
+    check(ink.Enabled == false, "overlay stays hidden")
+    -- EMP selesai: filter balik normal -> dilepas
+    dv.Brightness, dv.TintColor = 0, Color3.new(1, 1, 1)
+    __runRenderBinds()
+    check(dv.Enabled == true, "color correction released after EMP")
+    -- No fog: Atmosphere ikut dibersihkan
+    click(control("No fog", "Toggle"))
+    __runRenderBinds()
+    check(L.FogEnd == 1e6 and atmo.Density == 0 and atmo.Haze == 0, "no fog clears atmosphere")
+    -- matikan fullbright: lighting & overlay balik, no fog tetap jalan
+    dv.Brightness = -0.7
+    __runRenderBinds()
+    check(dv.Enabled == false, "dark again")
+    click(fb)
+    check(S.fullbright == false, "fullbright off")
+    check(L.Brightness == 0.5 and L.ExposureCompensation == -1, "lighting restored to the value before fullbright: " .. tostring(L.Brightness) .. "/" .. tostring(L.ExposureCompensation))
+    check(dv.Enabled == true and ink.Enabled == true and after.Enabled == true, "effects and overlays restored")
+    check(atmo.Density == 0, "no fog still active")
+    click(control("No fog", "Toggle"))
+    check(math.abs(atmo.Density - 0.45) < 1e-6 and atmo.Haze == 1.5 and L.FogEnd == 900, "atmosphere and fog restored")
+    dv:Destroy(); tint:Destroy(); atmo:Destroy(); ink:Destroy(); after:Destroy(); hud:Destroy()
+end
+
 -- 4. pesan dari Actions sampai ke toast
 clearToasts()
 click(control("Teleport-Heal-Return", "Action"))
