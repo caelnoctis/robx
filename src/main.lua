@@ -32,7 +32,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.2.0",
+    Version = "2.3.0",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -368,6 +368,18 @@ local function infoTeam(info)
     return info.team or (info.role and Game.teamOf(info.role)) or nil
 end
 
+-- Warna role persis dari game (roleColorsConfig), dicerahkan kalau terlalu gelap untuk panel ESP.
+local function roleTint(role, fallback)
+    local ok, c = pcall(Game.roleColor, role)
+    if not (ok and typeof(c) == "Color3") then
+        return fallback
+    end
+    if 0.299 * c.R + 0.587 * c.G + 0.114 * c.B < 0.45 then
+        c = c:Lerp(Color3.new(1, 1, 1), 0.35)
+    end
+    return c
+end
+
 ----------------------------------------------------------------------
 -- ESP
 ----------------------------------------------------------------------
@@ -514,7 +526,7 @@ function ESP.step()
                     elseif info.confidence == "suspect" then
                         mark = " ??"
                     end
-                    lines[#lines + 1] = string.format('<font color="%s">[%s%s]</font>', hex(color), esc(string.upper(info.role)), mark)
+                    lines[#lines + 1] = string.format('<font color="%s">[%s%s]</font>', hex(roleTint(info.role, color)), esc(string.upper(info.role)), mark)
                 end
                 local extra = {}
                 if S.espStatus then
@@ -1270,6 +1282,12 @@ end, { action = "Clear" })
 UI.slider(Pages.settings, "UI scale", "Makes the whole window bigger or smaller.", 0.7, 1.3, 1, function(v)
     UI.scale.Scale = v
 end, 2)
+UI.section(Pages.settings, "Game hotkeys")
+local hotkeyFeed = UI.feed(Pages.settings, "Your in-game keys", 5)
+UI.note(Pages.settings, "Read live from the game's own hotkey settings (* = you changed it in the game's Settings). If an ability seems dead, check its key here first. Binding a NoctisENIX feature to one of these keys shows a warning, because pressing it would do both.")
+UI.keyConflict = function(keyCode)
+    return Game.hotkeyAction(keyCode.Name)
+end
 UI.section(Pages.settings, "Cursor")
 UI.toggle(Pages.settings, "Free mouse while menu is open", "Unlocks and shows the mouse while the menu is open, even when the game hides it.", S.freeMouse, function(v)
     S.freeMouse = v
@@ -1310,7 +1328,7 @@ local function refreshUi()
         end
         local color = teamColor(team)
         r.role.Text = label
-        r.role.TextColor3 = color
+        r.role.TextColor3 = info.role and roleTint(info.role, color) or color
         r.role.BackgroundColor3 = color
         if r.title then
             r.title.Text = charName(p, info)
@@ -1381,6 +1399,25 @@ local function refreshUi()
         netItems[#netItems + 1] = { text = esc(log[i]) }
     end
     netFeed.Set(netItems)
+
+    local okH, hotkeys = pcall(Game.gameHotkeys)
+    local hkItems = {}
+    if okH and type(hotkeys) == "table" then
+        local row = {}
+        for _, a in ipairs(hotkeys) do
+            if a.group == "ROLE" or a.group == "GENERAL" or a.id == "freeCursor" then
+                row[#row + 1] = esc(a.label) .. "  <b>" .. esc(a.key or "unbound") .. "</b>" .. (a.custom and "*" or "")
+                if #row == 3 then
+                    hkItems[#hkItems + 1] = { text = table.concat(row, "     "), color = Theme.Text }
+                    row = {}
+                end
+            end
+        end
+        if #row > 0 then
+            hkItems[#hkItems + 1] = { text = table.concat(row, "     "), color = Theme.Text }
+        end
+    end
+    hotkeyFeed.Set(hkItems)
 end
 
 ----------------------------------------------------------------------

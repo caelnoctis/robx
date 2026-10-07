@@ -572,8 +572,9 @@ return function(ctx)
         end
         v.candidates = cands
         if rec.role then
+            local rt = Game.teamOf(rec.role)
             v.role = rec.role
-            v.team = Game.teamOf(rec.role) or rec.team
+            v.team = ((rt == nil or rt == "NEUTRAL") and rec.team) or rt
             v.confidence = rec.roleConf
             v.reason = rec.reason
         elseif rec.team then
@@ -677,7 +678,7 @@ return function(ctx)
             end
         end
         local team = Game.teamOf(role)
-        if not force and rec.team and rec.teamConf == "confirmed" and conf ~= "confirmed" and team and team ~= rec.team then
+        if not force and rec.team and rec.teamConf == "confirmed" and conf ~= "confirmed" and team and team ~= "NEUTRAL" and team ~= rec.team then
             return false
         end
         rec.role, rec.roleConf, rec.reason = role, conf, reason
@@ -714,8 +715,12 @@ return function(ctx)
         local rec = getRec(p)
         local newR = RANK[conf]
         if rec.role then
+            -- Role NEUTRAL (Bodyguard) bisa berpihak ke tim mana pun, jadi bukan konflik.
             local rt = Game.teamOf(rec.role)
-            if rt and rt ~= team then
+            if rt == "NEUTRAL" and team == "NEUTRAL" and rec.team and rec.team ~= "NEUTRAL" then
+                return false -- sisi yang sudah ketahuan jangan ditimpa label "neutral"
+            end
+            if rt and rt ~= team and rt ~= "NEUTRAL" then
                 if RANK[rec.roleConf] >= newR then
                     return false
                 end
@@ -791,7 +796,7 @@ return function(ctx)
             return false
         end
         local rt = Game.teamOf(role)
-        if rt and rec.team and rec.teamConf == "confirmed" and rec.team ~= rt then
+        if rt and rt ~= "NEUTRAL" and rec.team and rec.teamConf == "confirmed" and rec.team ~= rt then
             return false
         end
         return true
@@ -2454,7 +2459,10 @@ return function(ctx)
             setTeam(LocalPlayer, selfTeam, "confirmed", "your team")
         end
         local myRole = rec.role
-        local myTeam = (myRole and Game.teamOf(myRole)) or rec.team
+        local myTeam = myRole and Game.teamOf(myRole) or nil
+        if myTeam == nil or myTeam == "NEUTRAL" then
+            myTeam = rec.team
+        end
         if rc then
             readMates(rc, myTeam)
         end
@@ -3004,7 +3012,7 @@ return function(ctx)
             return false
         end
         local t = Game.normalizeTeam(team) or (type(team) == "string" and string.upper(team) or nil)
-        if t ~= "EVIL" and t ~= "VEIL" and t ~= "TOWN" then
+        if t ~= "EVIL" and t ~= "VEIL" and t ~= "TOWN" and t ~= "NEUTRAL" then
             return false
         end
         local ok, res = pcall(setTeam, p, t, conf or "confirmed", reason or "network")
@@ -3113,7 +3121,10 @@ return function(ctx)
         if not rec then
             return nil, nil
         end
-        local team = (rec.role and Game.teamOf(rec.role)) or rec.team
+        local team = rec.role and Game.teamOf(rec.role) or nil
+        if team == nil or team == "NEUTRAL" then
+            team = rec.team or team
+        end
         return rec.role, team
     end
 

@@ -492,6 +492,10 @@ return function(ctx)
             myTeam = tf and Game.normalizeTeam(tf) or nil
         end
         myTeam = myTeam or (Net.selfRole and Game.teamOf(Net.selfRole)) or nil
+        -- Rekan Bodyguard (NEUTRAL) bukan "tim neutral"; sisi mereka nggak bisa disimpulkan dari sini.
+        if myTeam == "NEUTRAL" then
+            myTeam = nil
+        end
         for p in pairs(members) do
             if p ~= LocalPlayer then
                 call("teammate", p, myTeam, reason)

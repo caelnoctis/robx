@@ -412,20 +412,27 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Config role / tim (dibaca dari modul game kalau bisa di-require)
     ------------------------------------------------------------------
-    -- Tim cadangan kalau config game nggak bisa di-require. Mafia, Witch, Bodyguard punya remote
-    -- teamMembers + nightVision (sisi Evil). Janitor menangkal Saboteur (unlock, anti-banana) jadi Town.
+    -- Tim cadangan kalau teamsConfig nggak bisa di-require (di lobby modul itu memang nggak ada).
+    -- Dicocokkan ke capture Inspector: teamsConfig in-game (mafia 2 role, veil 4, town 8, neutral 3),
+    -- statsConfig.Roles, dan roleHandbookConfig ("The Bodyguard is a neutral protective role").
+    -- Bodyguard ikut sisi orang yang dia jaga, jadi timnya NEUTRAL sampai ada bukti sisi (lihat Intel).
     local FALLBACK_TEAMS = {
         mafia = "EVIL",
         witch = "EVIL",
-        bodyguard = "EVIL",
         saboteur = "VEIL",
         mirage = "VEIL",
+        poisoner = "VEIL",
+        harbinger = "VEIL",
         detective = "TOWN",
         doctor = "TOWN",
         vigilante = "TOWN",
         janitor = "TOWN",
         detainer = "TOWN",
+        judge = "TOWN",
+        suppressor = "TOWN",
         civilian = "TOWN",
+        bodyguard = "NEUTRAL",
+        jester = "NEUTRAL",
     }
     local FALLBACK_ROLES = {
         "Mafia", "Witch", "Bodyguard", "Saboteur", "Mirage", "Poisoner", "Phantom", "Harbinger",
@@ -570,6 +577,12 @@ return function(ctx)
                 map[alias] = map[key]
             end
         end
+        -- Role musiman yang lagi dimatikan game (seasonalRolesConfig) nggak ikut dicocokkan.
+        for key in pairs(map) do
+            if not G.roleEnabled(key) then
+                map[key] = nil
+            end
+        end
         roleInfo, roleInfoAt = map, now()
         G.rolesFromConfig = rolesCfg ~= nil
         return map
@@ -605,6 +618,147 @@ return function(ctx)
         local key = string.lower(roleName)
         local e = G.roles(false)[ROLE_ALIASES[key] or key]
         return e and e.team or FALLBACK_TEAMS[key] or FALLBACK_TEAMS[(string.gsub(key, " ", ""))]
+    end
+
+    local function compactKey(name)
+        return (string.gsub(string.lower(tostring(name)), "[%s_%-]", ""))
+    end
+
+    -- seasonalRolesConfig.enabled = { phantom = false, snowspirit = false } -> role itu nggak ada di ronde.
+    function G.roleEnabled(roleName)
+        if roleName == nil then
+            return false
+        end
+        local cfg = G.require("shared.configurations.seasonalRolesConfig")
+        local enabled = type(cfg) == "table" and rawget(cfg, "enabled") or nil
+        if type(enabled) ~= "table" then
+            return true
+        end
+        return rawget(enabled, compactKey(roleName)) ~= false
+    end
+
+    -- Warna role persis dari roleColorsConfig; cadangannya salinan nilai yang terbaca di capture.
+    local ROLE_COLORS_FALLBACK = {
+        bodyguard = { 144, 160, 173 }, civilian = { 36, 156, 48 }, detainer = { 100, 215, 190 },
+        detective = { 211, 109, 0 }, doctor = { 29, 162, 205 }, harbinger = { 217, 54, 121 },
+        janitor = { 207, 227, 21 }, jester = { 151, 32, 37 }, judge = { 58, 105, 52 },
+        mafia = { 151, 32, 37 }, mirage = { 230, 168, 60 }, phantom = { 212, 212, 205 },
+        poisoner = { 232, 211, 12 }, saboteur = { 214, 72, 237 }, snowspirit = { 7, 218, 255 },
+        suppressor = { 212, 184, 30 }, vigilante = { 104, 120, 208 }, witch = { 100, 215, 190 },
+    }
+    local roleColors, roleColorsAt = nil, -100
+
+    function G.roleColor(roleName)
+        if roleName == nil then
+            return nil
+        end
+        if not roleColors or now() - roleColorsAt > 30 then
+            local map = {}
+            for k, rgb in pairs(ROLE_COLORS_FALLBACK) do
+                map[k] = Color3.fromRGB(rgb[1], rgb[2], rgb[3])
+            end
+            local cfg = G.require("shared.configurations.roleColorsConfig")
+            if type(cfg) == "table" then
+                for k, v in pairs(cfg) do
+                    if type(k) == "string" and typeof(v) == "Color3" then
+                        map[compactKey(k)] = v
+                    end
+                end
+            end
+            roleColors, roleColorsAt = map, now()
+        end
+        return roleColors[compactKey(roleName)]
+    end
+
+    ------------------------------------------------------------------
+    -- Hotkey game (hotkeysConfig + attribute "Hotkeys" milik pemain)
+    ------------------------------------------------------------------
+    -- Attribute "Hotkeys" isinya JSON override, contoh {"ability2":"F","flashlight":"G"}; "[]" = default.
+    local HOTKEY_DEFAULTS = {
+        { id = "interact", label = "Interact", key = "E", group = "GENERAL" },
+        { id = "flashlight", label = "Flashlight", key = "F", group = "GENERAL" },
+        { id = "ability1", label = "Main ability", key = "T", group = "ROLE" },
+        { id = "ability2", label = "Second ability", key = "G", group = "ROLE" },
+        { id = "ability3", label = "Third ability", key = "R", group = "ROLE" },
+        { id = "perk", label = "Use perk", key = "Q", group = "ROLE" },
+        { id = "playerList", label = "Player list", key = "Tab", group = "INTERFACE" },
+        { id = "tips", label = "Role tips", key = "H", group = "INTERFACE" },
+        { id = "freeCursor", label = "Free cursor", key = "P", group = "INTERFACE" },
+        { id = "openSettings", label = "Settings", key = "P", group = "INTERFACE" },
+    }
+
+    local hotkeyCache, hotkeyAt = nil, -100
+
+    function G.gameHotkeys(force)
+        if hotkeyCache and not force and now() - hotkeyAt < 3 then
+            return hotkeyCache
+        end
+        local list = {}
+        local cfg = G.require("shared.configurations.hotkeysConfig")
+        local actions = type(cfg) == "table" and rawget(cfg, "actions") or nil
+        if type(actions) == "table" then
+            for _, a in ipairs(actions) do
+                if type(a) == "table" and not rawget(a, "devOnly") then
+                    local id, key = rawget(a, "id"), rawget(a, "default")
+                    if type(id) == "string" and type(key) == "string" then
+                        local label = rawget(a, "label")
+                        list[#list + 1] = {
+                            id = id,
+                            label = type(label) == "string" and label or id,
+                            key = key,
+                            group = rawget(a, "group"),
+                        }
+                    end
+                end
+            end
+        end
+        if #list == 0 then
+            for i, a in ipairs(HOTKEY_DEFAULTS) do
+                list[i] = { id = a.id, label = a.label, key = a.key, group = a.group }
+            end
+        end
+        local attrName = type(cfg) == "table" and rawget(cfg, "ATTRIBUTE") or nil
+        local unbound = type(cfg) == "table" and rawget(cfg, "UNBOUND") or nil
+        attrName = type(attrName) == "string" and attrName or "Hotkeys"
+        unbound = type(unbound) == "string" and unbound or "None"
+        local raw = G.attr(LocalPlayer, attrName)
+        local http = ctx.service and ctx.service("HttpService")
+        if type(raw) == "string" and raw ~= "" and http then
+            local ok, overrides = pcall(function()
+                return http:JSONDecode(raw)
+            end)
+            if ok and type(overrides) == "table" then
+                for _, a in ipairs(list) do
+                    local v = rawget(overrides, a.id)
+                    if v == unbound then
+                        a.key, a.custom = nil, true
+                    elseif type(v) == "string" and v ~= "" then
+                        a.key, a.custom = v, true
+                    end
+                end
+            end
+        end
+        hotkeyCache, hotkeyAt = list, now()
+        return list
+    end
+
+    -- Aksi game yang memakai tombol ini (nama KeyCode, mis. "G"), atau nil.
+    function G.hotkeyAction(keyName)
+        if type(keyName) ~= "string" then
+            return nil
+        end
+        local hits = {}
+        for _, a in ipairs(G.gameHotkeys()) do
+            if a.key == keyName then
+                hits[#hits + 1] = a.label
+            end
+        end
+        return #hits > 0 and table.concat(hits, " / ") or nil
+    end
+
+    -- Buang cache config (role, warna, hotkey) supaya dibaca ulang dari modul game.
+    function G.flushConfig()
+        roleInfo, roleColors, hotkeyCache = nil, nil, nil
     end
 
     function G.gameConfig()

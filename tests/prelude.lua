@@ -59,9 +59,13 @@ V2.__index = V2
 V2.__sub = function(a, b) return setmetatable({ X = a.X - b.X, Y = a.Y - b.Y }, V2) end
 Vector2 = { new = function(x, y) return setmetatable({ X = x or 0, Y = y or 0 }, V2) end }
 
+local C3 = {}
+C3.__index = C3
+local function mkColor(r, g, b) return setmetatable({ R = r or 0, G = g or 0, B = b or 0, __rbxtype = "Color3" }, C3) end
+function C3.Lerp(a, b, t) return mkColor(a.R + (b.R - a.R) * t, a.G + (b.G - a.G) * t, a.B + (b.B - a.B) * t) end
 Color3 = {
-    new = function(r, g, b) return { R = r, G = g, B = b } end,
-    fromRGB = function(r, g, b) return { R = r / 255, G = g / 255, B = b / 255 } end,
+    new = function(r, g, b) return mkColor(r, g, b) end,
+    fromRGB = function(r, g, b) return mkColor(r / 255, g / 255, b / 255) end,
 }
 
 UDim = { new = function(s, o) return { Scale = s or 0, Offset = o or 0 } end }

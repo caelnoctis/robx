@@ -27,7 +27,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 
 | Tab | Isi |
 | --- | --- |
-| ESP | Highlight warna tim (merah Evil, emas Veil, hijau Town, ungu Neutral, abu-abu = belum pasti), baris `EVIL TEAM` / **nama karakter in-game** / `[ROLE]` (@username Roblox opsional), status DOWNED / DETAINED / SILENCED / IN LOCKER, jarak, HP. Default cuma role yang **pasti**; tebakan bisa dinyalakan lewat "Show guesses too" |
+| ESP | Highlight warna tim (merah Evil, emas Veil, hijau Town, ungu Neutral, abu-abu = belum pasti), baris `EVIL TEAM` / **nama karakter in-game** / `[ROLE]` dengan **warna role asli game** (@username Roblox opsional), status DOWNED / DETAINED / SILENCED / IN LOCKER, jarak, HP. Default cuma role yang **pasti**; tebakan bisa dinyalakan lewat "Show guesses too" |
 | Roles | Role kamu, daftar role yang sudah ketahuan beserta alasannya, kill feed dan log bukti, notifikasi role, alert saat ada yang vote kamu, reset ronde |
 | Deception | Fake crawl, fake stab (`KnifeSwing`), fake gunshot (`Glock`), ghost, **Escape meeting seat**, **Stand on the table** (semuanya bisa diberi keybind) |
 | Teleport | Pilih target, ke target / ke yang downed / ke yang detained, Teleport-Stab-Return (Mafia), Bring target, Teleport-Heal-Return (Doctor) |
@@ -35,7 +35,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 | Players | Daftar pemain + role, tombol target, teleport, spectate |
 | World | Fullbright, no fog, instant interact, anti AFK |
 | Dev Tools | Scan remote, dump pemain, remote logger |
-| Settings | Toggle key, cek game, rejoin, unload |
+| Settings | Menu key, keybind (simpan / hapus), **hotkey game kamu** (T / G / R / Q / E / F atau yang sudah kamu ganti), kursor, cek game, rejoin, unload |
 
 ## Catatan penting (v2.1)
 
@@ -45,19 +45,35 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 * Tutup menu (RightShift) saat membidik tusukan atau tembakan. Selama menu terbuka, mouse dilepas supaya UI bisa diklik, sehingga game tidak bisa membidik.
 * Role call ketat: chat pemain di game ini lewat jalur pesan sistem, dan dulu sempat terbaca sebagai pengumuman. Sekarang chat pemain diabaikan, animasi serangan dikunci ke ID asli (`KnifeSwing`, `Glock`), dan yang tampil default cuma role yang pasti.
 
+## Catatan v2.3 (kalibrasi dari capture lobby)
+
+* **Ability nggak keluar waktu tombolnya ditekan?** Tombol ability di game ini bisa diganti pemain, dan pilihannya tersimpan di attribute `Hotkeys` (contoh `{"ability2":"F","flashlight":"G"}`). Bawaannya Main ability **T**, Second ability **G**, Third ability **R**, perk **Q**, interact **E**, flashlight **F**. Settings > **Game hotkeys** sekarang menampilkan tombol yang benar-benar aktif di akun kamu (tanda `*` = sudah kamu ganti).
+* Kalau keybind NoctisENIX dipasang di tombol yang sama dengan ability game, muncul peringatan, karena sekali tekan dua-duanya jalan.
+* Game punya tombol **Free cursor** sendiri (bawaan **P**). Kalau kursor kekunci di luar menu, tombol itu yang melepasnya.
+* Warna role di ESP diambil dari `roleColorsConfig` game, jadi persis sama dengan warna di UI game.
+
 ## Cara kerja deteksi role
 
 Game ini **tidak menyimpan role pemain lain di client**. Dump attribute dari game asli mengonfirmasi hal itu: yang ada cuma `DisguiseName`, status seperti `Downed`, dan attribute `<Role>Boosters` (booster peluang dapat role, **bukan** role yang sedang dipegang, jadi sengaja diabaikan). Karena itu role dikumpulkan dari beberapa sumber, dengan tingkat keyakinan `confirmed`, `likely` (`?`), dan `suspect` (`??`):
 
 * **Jaringan game** (`ReplicatedStorage.ServiceNetworks` dan `RoleNetworks`):
   * Role kamu sendiri dari `roleService.role`, plus `getRoleNetwork`.
-  * Rekan setim dari `teamService.teamMembers` dan `teamMembers` milik role Evil (Mafia, Witch, Bodyguard).
+  * Rekan setim dari `teamService.teamMembers` dan `teamMembers` milik role kamu.
   * Pengungkapan role dari `gameService.revealRoles`, cutscene kematian, `chatService.onSystemMessage`, dan `announcementService.show`.
   * Fase dari `gameService.gamePhase` dan `setTopbarText`.
 * **Bukti aksi**: animasi tusuk atau tembak saat malam (Mafia), tembakan siang (Vigilante), korban kena silence (Witch), pintu dikunci atau banana (Saboteur), pintu dibuka atau bersih-bersih (Janitor), korban bangun dari downed atau sembuh dari racun (Doctor). Kalau ada beberapa kandidat, kandidat dipersempit dari kejadian ke kejadian.
 * **Pengumuman sistem**, termasuk alur tebakan Harbinger.
 
-Role yang dikenali: Mafia, Witch, Bodyguard (Evil), Saboteur, Mirage (Veil), Detective, Doctor, Vigilante, Janitor, Detainer (Town), serta Poisoner, Phantom, Harbinger, Judge, Suppressor, Jester, dan Snow Spirit (tim dibaca dari config game kalau bisa).
+Role dan tim (dibaca dari `teamsConfig` game saat di dalam match; cadangannya disalin dari capture Inspector):
+
+| Tim | Role |
+| --- | --- |
+| Evil (Mafia) | Mafia, Witch |
+| Veil | Saboteur, Mirage, Poisoner, Harbinger |
+| Town | Civilian, Detective, Doctor, Vigilante, Janitor, Detainer, Judge, Suppressor |
+| Neutral | Jester, Bodyguard |
+
+Bodyguard itu netral, tapi sisinya ikut orang yang dia jaga. Kalau dia muncul di daftar `teamMembers` Mafia, ESP menampilkan `EVIL TEAM` + `[BODYGUARD]`. Phantom dan Snow Spirit adalah role musiman; selama `seasonalRolesConfig` mematikannya, keduanya tidak ikut dicocokkan.
 
 Bentuk argumen remote (misalnya apa yang dikirim `revealRoles`, atau argumen `onStab`) belum terlihat langsung, jadi parser-nya dibuat toleran terhadap beberapa bentuk. Hasil Inspector (section **GAME NETWORK** dan live log) dipakai untuk mengunci format pastinya.
 

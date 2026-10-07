@@ -788,6 +788,12 @@ return function(env)
                 end
                 if not claimKey(bind, input.KeyCode) then
                     UI.notify("Keybind", input.KeyCode.Name .. " is the menu key. Pick another key.", Theme.Bad, 3)
+                elseif UI.keyConflict then
+                    -- Tombol yang sama dengan ability game: dua-duanya jalan, jadi kasih tahu.
+                    local okC, clash = pcall(UI.keyConflict, input.KeyCode)
+                    if okC and type(clash) == "string" then
+                        UI.notify("Keybind", input.KeyCode.Name .. " is also your in-game " .. clash .. " key. Pressing it does both.", Theme.Warn, 5)
+                    end
                 end
                 UI.renderChip(bind)
                 UI.saveSettings()
