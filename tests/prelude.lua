@@ -557,3 +557,88 @@ Enum.RenderPriority.Input.Value = 100
 Enum.RenderPriority.Camera.Value = 200
 Enum.RenderPriority.Character.Value = 300
 Enum.RenderPriority.Last.Value = 2000
+
+SignalNames.MouseButton2Click = true
+
+-- JSON sederhana untuk HttpService mock (cukup untuk settings.json)
+local function jsonEncode(v)
+    local t = type(v)
+    if t == "table" then
+        local isArr = (#v > 0)
+        local parts = {}
+        if isArr then
+            for _, x in ipairs(v) do parts[#parts + 1] = jsonEncode(x) end
+            return "[" .. table.concat(parts, ",") .. "]"
+        end
+        local keys = {}
+        for k in pairs(v) do keys[#keys + 1] = tostring(k) end
+        table.sort(keys)
+        for _, k in ipairs(keys) do parts[#parts + 1] = string.format("%q", k) .. ":" .. jsonEncode(v[k]) end
+        return "{" .. table.concat(parts, ",") .. "}"
+    elseif t == "string" then
+        return string.format("%q", v)
+    elseif t == "boolean" or t == "number" then
+        return tostring(v)
+    end
+    return "null"
+end
+local function jsonDecode(str)
+    local i = 1
+    local function ws() while true do local c = string.sub(str, i, i) if c == " " or c == "\n" or c == "\t" or c == "\r" then i = i + 1 else break end end end
+    local value
+    local function parseString()
+        i = i + 1
+        local out = {}
+        while true do
+            local c = string.sub(str, i, i)
+            if c == '"' then i = i + 1 break end
+            if c == "\\" then i = i + 1 c = string.sub(str, i, i) end
+            out[#out + 1] = c
+            i = i + 1
+        end
+        return table.concat(out)
+    end
+    value = function()
+        ws()
+        local c = string.sub(str, i, i)
+        if c == "{" then
+            i = i + 1
+            local obj = {}
+            ws()
+            if string.sub(str, i, i) == "}" then i = i + 1 return obj end
+            while true do
+                ws()
+                local k = parseString()
+                ws() i = i + 1 -- :
+                obj[k] = value()
+                ws()
+                local d = string.sub(str, i, i)
+                i = i + 1
+                if d == "}" then return obj end
+            end
+        elseif c == "[" then
+            i = i + 1
+            local arr = {}
+            ws()
+            if string.sub(str, i, i) == "]" then i = i + 1 return arr end
+            while true do
+                arr[#arr + 1] = value()
+                ws()
+                local d = string.sub(str, i, i)
+                i = i + 1
+                if d == "]" then return arr end
+            end
+        elseif c == '"' then
+            return parseString()
+        elseif string.sub(str, i, i + 3) == "true" then i = i + 4 return true
+        elseif string.sub(str, i, i + 4) == "false" then i = i + 5 return false
+        elseif string.sub(str, i, i + 3) == "null" then i = i + 4 return nil
+        end
+        local num = string.match(str, "^-?[%d%.eE+-]+", i)
+        i = i + #num
+        return tonumber(num)
+    end
+    return value()
+end
+function Methods.JSONEncode(self, v) return jsonEncode(v) end
+function Methods.JSONDecode(self, s) return jsonDecode(s) end

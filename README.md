@@ -10,6 +10,8 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 
 Menu: **RightShift** (bisa diganti di Settings). Eksekusi ulang otomatis meng-unload instance lama.
 
+**Keybind** tersimpan otomatis di `workspace/NoctisENIX/settings.json` (folder workspace milik Xeno) dan dimuat lagi setiap script dijalankan. Klik chip lalu tekan tombol untuk mengikat; klik kanan chip (atau Backspace saat chip bertuliskan PRESS) untuk menghapus; tombol **Clear all keybinds** di Settings menghapus semuanya kecuali menu key. Satu tombol keyboard cuma bisa dipakai satu fitur.
+
 ## Inspector (buat kalibrasi)
 
 ```lua
@@ -25,7 +27,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 
 | Tab | Isi |
 | --- | --- |
-| ESP | Highlight warna tim (merah Evil, emas Veil, hijau Town, ungu Neutral, abu-abu = belum pasti), baris `EVIL TEAM` / nama / `[ROLE]`, nama asli di balik disguise, status DOWNED / DETAINED / SILENCED / IN LOCKER, jarak, HP. Default cuma role yang **pasti**; tebakan bisa dinyalakan lewat "Show guesses too" |
+| ESP | Highlight warna tim (merah Evil, emas Veil, hijau Town, ungu Neutral, abu-abu = belum pasti), baris `EVIL TEAM` / **nama karakter in-game** / `[ROLE]` (@username Roblox opsional), status DOWNED / DETAINED / SILENCED / IN LOCKER, jarak, HP. Default cuma role yang **pasti**; tebakan bisa dinyalakan lewat "Show guesses too" |
 | Roles | Role kamu, daftar role yang sudah ketahuan beserta alasannya, kill feed dan log bukti, notifikasi role, alert saat ada yang vote kamu, reset ronde |
 | Deception | Fake crawl, fake stab (`KnifeSwing`), fake gunshot (`Glock`), ghost, **Escape meeting seat**, **Stand on the table** (semuanya bisa diberi keybind) |
 | Teleport | Pilih target, ke target / ke yang downed / ke yang detained, Teleport-Stab-Return (Mafia), Bring target, Teleport-Heal-Return (Doctor) |

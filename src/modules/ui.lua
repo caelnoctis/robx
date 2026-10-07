@@ -6,6 +6,7 @@ return function(env)
     local UI = {
         tabs = {},
         binds = {},
+        bindsById = {},
         capturing = false,
         lastCapture = -1,
         minimized = false,
@@ -629,7 +630,120 @@ return function(env)
         return card, right, left
     end
 
-    -- Chip keybind. Klik lalu tekan tombol; Escape / Backspace = hapus.
+    ------------------------------------------------------------------
+    -- Keybind: chip, registry, simpan / muat (workspace/NoctisENIX/settings.json)
+    ------------------------------------------------------------------
+    local STORE_DIR, STORE_FILE = "NoctisENIX", "NoctisENIX/settings.json"
+
+    function UI.renderChip(bind)
+        local kb = bind.chip
+        if not kb then
+            return
+        end
+        kb.Text = bind.key and bind.key.Name or "NONE"
+        kb.TextColor3 = bind.key and Theme.Text or Theme.Sub
+    end
+
+    function UI.saveSettings()
+        if type(writefile) ~= "function" then
+            return false, "writefile missing"
+        end
+        local data = { version = 1, binds = {} }
+        for id, b in pairs(UI.bindsById) do
+            data.binds[id] = b.key and b.key.Name or false
+        end
+        local okJ, json = pcall(function()
+            return env.HttpService:JSONEncode(data)
+        end)
+        if not okJ then
+            return false, tostring(json)
+        end
+        pcall(function()
+            if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(STORE_DIR) then
+                makefolder(STORE_DIR)
+            end
+        end)
+        local okW, err = pcall(writefile, STORE_FILE, json)
+        return okW, okW and STORE_FILE or tostring(err)
+    end
+
+    function UI.loadSettings()
+        if type(readfile) ~= "function" then
+            return false
+        end
+        if type(isfile) == "function" then
+            local okF, exists = pcall(isfile, STORE_FILE)
+            if not okF or not exists then
+                return false
+            end
+        end
+        local okR, raw = pcall(readfile, STORE_FILE)
+        if not okR or type(raw) ~= "string" or raw == "" then
+            return false
+        end
+        local okD, data = pcall(function()
+            return env.HttpService:JSONDecode(raw)
+        end)
+        if not okD or type(data) ~= "table" or type(data.binds) ~= "table" then
+            return false
+        end
+        for id, name in pairs(data.binds) do
+            local b = UI.bindsById[id]
+            if b then
+                if name == false then
+                    if not b.required then
+                        b.key = nil
+                    end
+                elseif type(name) == "string" then
+                    local okK, kc = pcall(function()
+                        return Enum.KeyCode[name]
+                    end)
+                    if okK and kc then
+                        b.key = kc
+                    end
+                end
+                UI.renderChip(b)
+            end
+        end
+        return true
+    end
+
+    -- Tombol yang sama nggak boleh dipakai dua fitur: ikatan lama dilepas.
+    local function claimKey(bind, key)
+        for _, other in ipairs(UI.binds) do
+            if other ~= bind and other.key == key then
+                if other.required then
+                    return false
+                end
+                other.key = nil
+                UI.renderChip(other)
+            end
+        end
+        bind.key = key
+        return true
+    end
+
+    local function clearBind(bind)
+        if bind.required then
+            bind.key = bind.default
+        else
+            bind.key = nil
+        end
+        UI.renderChip(bind)
+        UI.saveSettings()
+    end
+
+    function UI.clearAllBinds()
+        for _, b in ipairs(UI.binds) do
+            if not b.required then
+                b.key = nil
+                UI.renderChip(b)
+            end
+        end
+        return UI.saveSettings()
+    end
+
+    -- Chip keybind. Klik lalu tekan tombol; Escape / Backspace / klik kanan = hapus.
     function UI.keyChip(parent, bind, order)
         local kb = new("TextButton", {
             Name = "Key",
@@ -639,13 +753,20 @@ return function(env)
             Font = Enum.Font.GothamBold,
             TextSize = 11,
             TextColor3 = Theme.Sub,
-            Text = bind.key and bind.key.Name or "NONE",
+            Text = "NONE",
             AutoButtonColor = false,
             LayoutOrder = order or 1,
             ZIndex = 4,
         }, parent)
         corner(kb, 7)
         stroke(kb, Theme.Stroke, 1, 0)
+        bind.chip = kb
+        UI.renderChip(bind)
+        connect(kb.MouseButton2Click, function()
+            if not UI.capturing then
+                clearBind(bind)
+            end
+        end)
         connect(kb.MouseButton1Click, function()
             if UI.capturing then
                 return
@@ -658,25 +779,55 @@ return function(env)
                 if input.UserInputType ~= Enum.UserInputType.Keyboard then
                     return
                 end
-                if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Backspace then
-                    bind.key = nil
-                else
-                    bind.key = input.KeyCode
-                end
-                kb.Text = bind.key and bind.key.Name or "NONE"
-                kb.TextColor3 = bind.key and Theme.Text or Theme.Sub
                 conn:Disconnect()
                 UI.capturing = false
                 UI.lastCapture = os.clock()
+                if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Backspace then
+                    clearBind(bind)
+                    return
+                end
+                if not claimKey(bind, input.KeyCode) then
+                    UI.notify("Keybind", input.KeyCode.Name .. " is the menu key. Pick another key.", Theme.Bad, 3)
+                end
+                UI.renderChip(bind)
+                UI.saveSettings()
             end)
             track(conn)
         end)
         return kb
     end
 
-    function UI.bind(fire)
+    -- id = nama fitur (stabil antar sesi) buat simpan / muat.
+    function UI.bind(fire, id)
         local bind = { key = nil, fire = fire }
         UI.binds[#UI.binds + 1] = bind
+        if id then
+            local key, n = id, 1
+            while UI.bindsById[key] do
+                n = n + 1
+                key = id .. "#" .. n
+            end
+            bind.id = key
+            UI.bindsById[key] = bind
+        end
+        return bind
+    end
+
+    -- Bind yang wajib ada (menu key): dihapus = balik ke default.
+    function UI.registerBind(bind, id, required)
+        bind.id = id
+        bind.required = required and true or false
+        bind.default = bind.key
+        UI.bindsById[id] = bind
+        local found = false
+        for _, b in ipairs(UI.binds) do
+            if b == bind then
+                found = true
+            end
+        end
+        if not found then
+            UI.binds[#UI.binds + 1] = bind
+        end
         return bind
     end
 
@@ -741,7 +892,7 @@ return function(env)
         connect(hit.MouseButton1Click, flip)
         connect(switchHit.MouseButton1Click, flip)
         if hasBind then
-            api.bind = UI.bind(flip)
+            api.bind = UI.bind(flip, title)
             UI.keyChip(right, api.bind, 1)
         end
         render()
@@ -779,7 +930,7 @@ return function(env)
         connect(pill.MouseButton1Click, fire)
         local bind
         if hasBind then
-            bind = UI.bind(fire)
+            bind = UI.bind(fire, title)
             UI.keyChip(right, bind, 1)
         end
         return pill, bind, card

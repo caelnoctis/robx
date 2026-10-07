@@ -33,7 +33,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.1.1",
+    Version = "2.2.0",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -158,6 +158,7 @@ local S = {
     espStatus = true,
     espDistance = true,
     espHealth = false,
+    espRealName = false, -- false = cuma nama karakter in-game (DisguiseName), tanpa @username
     notifyRoles = true,
     voteAlert = true,
     showGuesses = false, -- false = cuma role / tim yang PASTI yang ditampilkan
@@ -254,6 +255,7 @@ return function(env)
     local UI = {
         tabs = {},
         binds = {},
+        bindsById = {},
         capturing = false,
         lastCapture = -1,
         minimized = false,
@@ -877,7 +879,120 @@ return function(env)
         return card, right, left
     end
 
-    -- Chip keybind. Klik lalu tekan tombol; Escape / Backspace = hapus.
+    ------------------------------------------------------------------
+    -- Keybind: chip, registry, simpan / muat (workspace/NoctisENIX/settings.json)
+    ------------------------------------------------------------------
+    local STORE_DIR, STORE_FILE = "NoctisENIX", "NoctisENIX/settings.json"
+
+    function UI.renderChip(bind)
+        local kb = bind.chip
+        if not kb then
+            return
+        end
+        kb.Text = bind.key and bind.key.Name or "NONE"
+        kb.TextColor3 = bind.key and Theme.Text or Theme.Sub
+    end
+
+    function UI.saveSettings()
+        if type(writefile) ~= "function" then
+            return false, "writefile missing"
+        end
+        local data = { version = 1, binds = {} }
+        for id, b in pairs(UI.bindsById) do
+            data.binds[id] = b.key and b.key.Name or false
+        end
+        local okJ, json = pcall(function()
+            return env.HttpService:JSONEncode(data)
+        end)
+        if not okJ then
+            return false, tostring(json)
+        end
+        pcall(function()
+            if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(STORE_DIR) then
+                makefolder(STORE_DIR)
+            end
+        end)
+        local okW, err = pcall(writefile, STORE_FILE, json)
+        return okW, okW and STORE_FILE or tostring(err)
+    end
+
+    function UI.loadSettings()
+        if type(readfile) ~= "function" then
+            return false
+        end
+        if type(isfile) == "function" then
+            local okF, exists = pcall(isfile, STORE_FILE)
+            if not okF or not exists then
+                return false
+            end
+        end
+        local okR, raw = pcall(readfile, STORE_FILE)
+        if not okR or type(raw) ~= "string" or raw == "" then
+            return false
+        end
+        local okD, data = pcall(function()
+            return env.HttpService:JSONDecode(raw)
+        end)
+        if not okD or type(data) ~= "table" or type(data.binds) ~= "table" then
+            return false
+        end
+        for id, name in pairs(data.binds) do
+            local b = UI.bindsById[id]
+            if b then
+                if name == false then
+                    if not b.required then
+                        b.key = nil
+                    end
+                elseif type(name) == "string" then
+                    local okK, kc = pcall(function()
+                        return Enum.KeyCode[name]
+                    end)
+                    if okK and kc then
+                        b.key = kc
+                    end
+                end
+                UI.renderChip(b)
+            end
+        end
+        return true
+    end
+
+    -- Tombol yang sama nggak boleh dipakai dua fitur: ikatan lama dilepas.
+    local function claimKey(bind, key)
+        for _, other in ipairs(UI.binds) do
+            if other ~= bind and other.key == key then
+                if other.required then
+                    return false
+                end
+                other.key = nil
+                UI.renderChip(other)
+            end
+        end
+        bind.key = key
+        return true
+    end
+
+    local function clearBind(bind)
+        if bind.required then
+            bind.key = bind.default
+        else
+            bind.key = nil
+        end
+        UI.renderChip(bind)
+        UI.saveSettings()
+    end
+
+    function UI.clearAllBinds()
+        for _, b in ipairs(UI.binds) do
+            if not b.required then
+                b.key = nil
+                UI.renderChip(b)
+            end
+        end
+        return UI.saveSettings()
+    end
+
+    -- Chip keybind. Klik lalu tekan tombol; Escape / Backspace / klik kanan = hapus.
     function UI.keyChip(parent, bind, order)
         local kb = new("TextButton", {
             Name = "Key",
@@ -887,13 +1002,20 @@ return function(env)
             Font = Enum.Font.GothamBold,
             TextSize = 11,
             TextColor3 = Theme.Sub,
-            Text = bind.key and bind.key.Name or "NONE",
+            Text = "NONE",
             AutoButtonColor = false,
             LayoutOrder = order or 1,
             ZIndex = 4,
         }, parent)
         corner(kb, 7)
         stroke(kb, Theme.Stroke, 1, 0)
+        bind.chip = kb
+        UI.renderChip(bind)
+        connect(kb.MouseButton2Click, function()
+            if not UI.capturing then
+                clearBind(bind)
+            end
+        end)
         connect(kb.MouseButton1Click, function()
             if UI.capturing then
                 return
@@ -906,25 +1028,55 @@ return function(env)
                 if input.UserInputType ~= Enum.UserInputType.Keyboard then
                     return
                 end
-                if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Backspace then
-                    bind.key = nil
-                else
-                    bind.key = input.KeyCode
-                end
-                kb.Text = bind.key and bind.key.Name or "NONE"
-                kb.TextColor3 = bind.key and Theme.Text or Theme.Sub
                 conn:Disconnect()
                 UI.capturing = false
                 UI.lastCapture = os.clock()
+                if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Backspace then
+                    clearBind(bind)
+                    return
+                end
+                if not claimKey(bind, input.KeyCode) then
+                    UI.notify("Keybind", input.KeyCode.Name .. " is the menu key. Pick another key.", Theme.Bad, 3)
+                end
+                UI.renderChip(bind)
+                UI.saveSettings()
             end)
             track(conn)
         end)
         return kb
     end
 
-    function UI.bind(fire)
+    -- id = nama fitur (stabil antar sesi) buat simpan / muat.
+    function UI.bind(fire, id)
         local bind = { key = nil, fire = fire }
         UI.binds[#UI.binds + 1] = bind
+        if id then
+            local key, n = id, 1
+            while UI.bindsById[key] do
+                n = n + 1
+                key = id .. "#" .. n
+            end
+            bind.id = key
+            UI.bindsById[key] = bind
+        end
+        return bind
+    end
+
+    -- Bind yang wajib ada (menu key): dihapus = balik ke default.
+    function UI.registerBind(bind, id, required)
+        bind.id = id
+        bind.required = required and true or false
+        bind.default = bind.key
+        UI.bindsById[id] = bind
+        local found = false
+        for _, b in ipairs(UI.binds) do
+            if b == bind then
+                found = true
+            end
+        end
+        if not found then
+            UI.binds[#UI.binds + 1] = bind
+        end
         return bind
     end
 
@@ -989,7 +1141,7 @@ return function(env)
         connect(hit.MouseButton1Click, flip)
         connect(switchHit.MouseButton1Click, flip)
         if hasBind then
-            api.bind = UI.bind(flip)
+            api.bind = UI.bind(flip, title)
             UI.keyChip(right, api.bind, 1)
         end
         render()
@@ -1027,7 +1179,7 @@ return function(env)
         connect(pill.MouseButton1Click, fire)
         local bind
         if hasBind then
-            bind = UI.bind(fire)
+            bind = UI.bind(fire, title)
             UI.keyChip(right, bind, 1)
         end
         return pill, bind, card
@@ -1513,6 +1665,7 @@ end)()({
     UserInputService = UserInputService,
     RunService = RunService,
     TweenService = TweenService,
+    HttpService = HttpService,
     LocalPlayer = LocalPlayer,
     Config = Config,
     S = S,
@@ -8487,6 +8640,19 @@ local function intelInfo(p)
     return view
 end
 
+-- Nama karakter in-game (DisguiseName); kalau belum ada, DisplayName.
+local function charName(p, info)
+    info = info or intelInfo(p)
+    if info.disguise and info.disguise ~= "" then
+        return info.disguise
+    end
+    local okA, dn = pcall(Game.attr, p, "DisguiseName")
+    if okA and type(dn) == "string" and dn ~= "" then
+        return dn
+    end
+    return p.DisplayName
+end
+
 local function infoTeam(info)
     return info.team or (info.role and Game.teamOf(info.role)) or nil
 end
@@ -8624,9 +8790,9 @@ function ESP.step()
                     lines[#lines + 1] = string.format('<font color="%s" size="10">%s TEAM</font>', hex(color), team)
                 end
                 if S.espNames then
-                    local name = esc(p.DisplayName)
-                    if info.disguise then
-                        name = esc(info.disguise) .. ' <font size="10" color="#BBBBCC">@' .. esc(p.Name) .. "</font>"
+                    local name = esc(charName(p, info))
+                    if S.espRealName then
+                        name = name .. ' <font size="10" color="#BBBBCC">@' .. esc(p.Name) .. "</font>"
                     end
                     lines[#lines + 1] = name
                 end
@@ -9055,8 +9221,11 @@ end, { bind = true, risk = "local" })
 UI.toggle(Pages.esp, "Highlight", "Colored outline and fill on the body.", S.espHighlight, function(v)
     S.espHighlight = v
 end)
-UI.toggle(Pages.esp, "Names", "Shows the disguise name plus the real @username behind it.", S.espNames, function(v)
+UI.toggle(Pages.esp, "Character names", "Shows each player's in-game character name (the disguise everyone sees), not their Roblox name.", S.espNames, function(v)
     S.espNames = v
+end)
+UI.toggle(Pages.esp, "Also show Roblox username", "Adds the real @username next to the character name.", S.espRealName, function(v)
+    S.espRealName = v
 end)
 UI.toggle(Pages.esp, "Team and role tags", "EVIL TEAM / [MAFIA] style tags. Only roles that are certain are shown.", S.espRoles, function(v)
     S.espRoles = v
@@ -9143,7 +9312,10 @@ local function targetLabel(p)
     if not p then
         return "None"
     end
-    return p.DisplayName .. "  @" .. p.Name
+    if S.espRealName then
+        return charName(p) .. "  @" .. p.Name
+    end
+    return charName(p)
 end
 
 UI.section(Pages.teleport, "Target")
@@ -9376,7 +9548,14 @@ end, { action = "Copy" })
 -- Settings -----------------------------------------------------------
 UI.section(Pages.settings, "Menu")
 local menuBind = { key = Config.ToggleKey }
-UI.keyCard(Pages.settings, "Menu key", "Opens and closes this window.", menuBind)
+UI.registerBind(menuBind, "__menu", true)
+UI.keyCard(Pages.settings, "Menu key", "Opens and closes this window. Right-click resets it to " .. Config.ToggleKey.Name .. ".", menuBind)
+UI.section(Pages.settings, "Keybinds")
+UI.note(Pages.settings, "Click a key chip, then press a key. Right-click a chip (or press Backspace while it says PRESS) to remove that keybind. Keybinds are saved to <b>workspace/NoctisENIX/settings.json</b> and come back next time you run the script.")
+UI.button(Pages.settings, "Clear all keybinds", "Removes every feature keybind (the menu key stays).", function()
+    local ok = UI.clearAllBinds()
+    report("Keybinds", true, ok and "All keybinds cleared and saved." or "All keybinds cleared (this executor cannot save files).")
+end, { action = "Clear" })
 UI.slider(Pages.settings, "UI scale", "Makes the whole window bigger or smaller.", 0.7, 1.3, 1, function(v)
     UI.scale.Scale = v
 end, 2)
@@ -9423,7 +9602,7 @@ local function refreshUi()
         r.role.TextColor3 = color
         r.role.BackgroundColor3 = color
         if r.title then
-            r.title.Text = info.disguise and (info.disguise .. "  (" .. p.DisplayName .. ")") or p.DisplayName
+            r.title.Text = charName(p, info)
         end
     end
 
@@ -9442,7 +9621,7 @@ local function refreshUi()
             local info = intelInfo(p)
             local t = infoTeam(info)
             if info.role or t then
-                local line = "<b>" .. esc(p.DisplayName) .. "</b>  " .. esc(info.role or "?") .. (t and ("  [" .. t .. "]") or "")
+                local line = "<b>" .. esc(charName(p, info)) .. "</b>  " .. esc(info.role or "?") .. (t and ("  [" .. t .. "]") or "")
                 if info.confidence then
                     line = line .. "  -  " .. info.confidence
                 end
@@ -9586,7 +9765,7 @@ connect(UserInputService.InputBegan, function(input, processed)
         return
     end
     for _, bind in ipairs(UI.binds) do
-        if bind.key and bind.key == input.KeyCode then
+        if bind.fire and bind.key and bind.key == input.KeyCode then
             task.spawn(safe, bind.fire)
         end
     end
@@ -9650,6 +9829,7 @@ end
 genv.NoctisENIX = { Version = Config.Version, Unload = Unload, Intel = Intel, Actions = Actions, Game = Game, Net = Net, UI = UI }
 
 UI.selectTab(UI.tabs[1])
+safe(UI.loadSettings)
 
 task.spawn(function()
     local ok, info = pcall(function()
@@ -9676,4 +9856,4 @@ task.spawn(function()
 end)
 
 refreshUi()
-notify("NoctisENIX v" .. Config.Version, "Loaded. " .. Config.ToggleKey.Name .. " opens and closes the menu.", nil, 5)
+notify("NoctisENIX v" .. Config.Version, "Loaded. " .. (menuBind.key and menuBind.key.Name or Config.ToggleKey.Name) .. " opens and closes the menu.", nil, 5)

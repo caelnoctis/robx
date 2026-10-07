@@ -32,7 +32,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.1.1",
+    Version = "2.2.0",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -157,6 +157,7 @@ local S = {
     espStatus = true,
     espDistance = true,
     espHealth = false,
+    espRealName = false, -- false = cuma nama karakter in-game (DisguiseName), tanpa @username
     notifyRoles = true,
     voteAlert = true,
     showGuesses = false, -- false = cuma role / tim yang PASTI yang ditampilkan
@@ -255,6 +256,7 @@ end)()({
     UserInputService = UserInputService,
     RunService = RunService,
     TweenService = TweenService,
+    HttpService = HttpService,
     LocalPlayer = LocalPlayer,
     Config = Config,
     S = S,
@@ -347,6 +349,19 @@ local function intelInfo(p)
         view.role, view.team, view.confidence, view.reason = nil, nil, nil, nil
     end
     return view
+end
+
+-- Nama karakter in-game (DisguiseName); kalau belum ada, DisplayName.
+local function charName(p, info)
+    info = info or intelInfo(p)
+    if info.disguise and info.disguise ~= "" then
+        return info.disguise
+    end
+    local okA, dn = pcall(Game.attr, p, "DisguiseName")
+    if okA and type(dn) == "string" and dn ~= "" then
+        return dn
+    end
+    return p.DisplayName
 end
 
 local function infoTeam(info)
@@ -486,9 +501,9 @@ function ESP.step()
                     lines[#lines + 1] = string.format('<font color="%s" size="10">%s TEAM</font>', hex(color), team)
                 end
                 if S.espNames then
-                    local name = esc(p.DisplayName)
-                    if info.disguise then
-                        name = esc(info.disguise) .. ' <font size="10" color="#BBBBCC">@' .. esc(p.Name) .. "</font>"
+                    local name = esc(charName(p, info))
+                    if S.espRealName then
+                        name = name .. ' <font size="10" color="#BBBBCC">@' .. esc(p.Name) .. "</font>"
                     end
                     lines[#lines + 1] = name
                 end
@@ -917,8 +932,11 @@ end, { bind = true, risk = "local" })
 UI.toggle(Pages.esp, "Highlight", "Colored outline and fill on the body.", S.espHighlight, function(v)
     S.espHighlight = v
 end)
-UI.toggle(Pages.esp, "Names", "Shows the disguise name plus the real @username behind it.", S.espNames, function(v)
+UI.toggle(Pages.esp, "Character names", "Shows each player's in-game character name (the disguise everyone sees), not their Roblox name.", S.espNames, function(v)
     S.espNames = v
+end)
+UI.toggle(Pages.esp, "Also show Roblox username", "Adds the real @username next to the character name.", S.espRealName, function(v)
+    S.espRealName = v
 end)
 UI.toggle(Pages.esp, "Team and role tags", "EVIL TEAM / [MAFIA] style tags. Only roles that are certain are shown.", S.espRoles, function(v)
     S.espRoles = v
@@ -1005,7 +1023,10 @@ local function targetLabel(p)
     if not p then
         return "None"
     end
-    return p.DisplayName .. "  @" .. p.Name
+    if S.espRealName then
+        return charName(p) .. "  @" .. p.Name
+    end
+    return charName(p)
 end
 
 UI.section(Pages.teleport, "Target")
@@ -1238,7 +1259,14 @@ end, { action = "Copy" })
 -- Settings -----------------------------------------------------------
 UI.section(Pages.settings, "Menu")
 local menuBind = { key = Config.ToggleKey }
-UI.keyCard(Pages.settings, "Menu key", "Opens and closes this window.", menuBind)
+UI.registerBind(menuBind, "__menu", true)
+UI.keyCard(Pages.settings, "Menu key", "Opens and closes this window. Right-click resets it to " .. Config.ToggleKey.Name .. ".", menuBind)
+UI.section(Pages.settings, "Keybinds")
+UI.note(Pages.settings, "Click a key chip, then press a key. Right-click a chip (or press Backspace while it says PRESS) to remove that keybind. Keybinds are saved to <b>workspace/NoctisENIX/settings.json</b> and come back next time you run the script.")
+UI.button(Pages.settings, "Clear all keybinds", "Removes every feature keybind (the menu key stays).", function()
+    local ok = UI.clearAllBinds()
+    report("Keybinds", true, ok and "All keybinds cleared and saved." or "All keybinds cleared (this executor cannot save files).")
+end, { action = "Clear" })
 UI.slider(Pages.settings, "UI scale", "Makes the whole window bigger or smaller.", 0.7, 1.3, 1, function(v)
     UI.scale.Scale = v
 end, 2)
@@ -1285,7 +1313,7 @@ local function refreshUi()
         r.role.TextColor3 = color
         r.role.BackgroundColor3 = color
         if r.title then
-            r.title.Text = info.disguise and (info.disguise .. "  (" .. p.DisplayName .. ")") or p.DisplayName
+            r.title.Text = charName(p, info)
         end
     end
 
@@ -1304,7 +1332,7 @@ local function refreshUi()
             local info = intelInfo(p)
             local t = infoTeam(info)
             if info.role or t then
-                local line = "<b>" .. esc(p.DisplayName) .. "</b>  " .. esc(info.role or "?") .. (t and ("  [" .. t .. "]") or "")
+                local line = "<b>" .. esc(charName(p, info)) .. "</b>  " .. esc(info.role or "?") .. (t and ("  [" .. t .. "]") or "")
                 if info.confidence then
                     line = line .. "  -  " .. info.confidence
                 end
@@ -1448,7 +1476,7 @@ connect(UserInputService.InputBegan, function(input, processed)
         return
     end
     for _, bind in ipairs(UI.binds) do
-        if bind.key and bind.key == input.KeyCode then
+        if bind.fire and bind.key and bind.key == input.KeyCode then
             task.spawn(safe, bind.fire)
         end
     end
@@ -1512,6 +1540,7 @@ end
 genv.NoctisENIX = { Version = Config.Version, Unload = Unload, Intel = Intel, Actions = Actions, Game = Game, Net = Net, UI = UI }
 
 UI.selectTab(UI.tabs[1])
+safe(UI.loadSettings)
 
 task.spawn(function()
     local ok, info = pcall(function()
@@ -1538,4 +1567,4 @@ task.spawn(function()
 end)
 
 refreshUi()
-notify("NoctisENIX v" .. Config.Version, "Loaded. " .. Config.ToggleKey.Name .. " opens and closes the menu.", nil, 5)
+notify("NoctisENIX v" .. Config.Version, "Loaded. " .. (menuBind.key and menuBind.key.Name or Config.ToggleKey.Name) .. " opens and closes the menu.", nil, 5)

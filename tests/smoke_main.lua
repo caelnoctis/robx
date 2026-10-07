@@ -54,7 +54,11 @@ if ao then
     check(math.abs(ao.hl.FillColor.R - 1) < 0.01 and ao.hl.FillColor.G < 0.35, "Alice red (EVIL)")
     check(string.find(ao.tx.Text, "EVIL TEAM", 1, true) ~= nil, "team line: " .. ao.tx.Text)
     check(string.find(ao.tx.Text, "[MAFIA]", 1, true) ~= nil, "role line")
-    check(string.find(ao.tx.Text, "Mask", 1, true) ~= nil and string.find(ao.tx.Text, "@Alice", 1, true) ~= nil, "disguise + real name")
+    check(string.find(ao.tx.Text, "Mask", 1, true) ~= nil and string.find(ao.tx.Text, "@Alice", 1, true) == nil, "character name only by default")
+    S.espRealName = true
+    ESP.step()
+    check(string.find(ao.tx.Text, "Mask", 1, true) ~= nil and string.find(ao.tx.Text, "@Alice", 1, true) ~= nil, "Roblox username when enabled")
+    S.espRealName = false
     check(string.find(ao.tx.Text, "DOWNED", 1, true) ~= nil, "status tag")
     check(ao.stroke.Color == TeamColors.EVIL, "panel stroke team color")
 end
@@ -69,7 +73,7 @@ local function anyLabel(sub)
     return false
 end
 check(anyLabel("Doctor"), "self role shown")
-check(anyLabel("<b>AliceD</b>  Mafia  [EVIL]"), "known roles lists Alice")
+check(anyLabel("<b>Mask</b>  Mafia  [EVIL]"), "known roles lists Alice by character name")
 check(anyLabel("stub event"), "evidence feed")
 check(PlayerRows.rows[alice] and PlayerRows.rows[alice].role.Text == "MAFIA", "player row role chip")
 
@@ -133,13 +137,13 @@ if dd then
     click(dd)
     local opt
     for _, d in ipairs(all()) do
-        if d.Name == "Option" and string.find(d.Text, "AliceD", 1, true) then opt = d end
+        if d.Name == "Option" and string.find(d.Text, "Mask", 1, true) then opt = d end
     end
     check(opt ~= nil, "dropdown option for Alice")
     check(opt and string.find(opt.Text, "[Mafia]", 1, true) ~= nil, "option shows known role")
     click(opt)
     check(Actions.getTarget() == alice, "target set via dropdown")
-    check(string.find(dd.Text, "AliceD", 1, true) ~= nil, "dropdown label updated")
+    check(string.find(dd.Text, "Mask", 1, true) ~= nil, "dropdown label updated")
     local still = false
     for _, d in ipairs(all()) do if d.Name == "Option" then still = true end end
     check(not still, "dropdown closed")
@@ -172,6 +176,50 @@ check(UI.modal.Visible == false, "Modal hidden with the menu (engine re-locks th
 check(uis.MouseBehavior == Enum.MouseBehavior.LockCenter and uis.MouseIconEnabled == false, "nothing restored over the game's state on close")
 press(Enum.KeyCode.RightShift)
 check(UI.main.Visible == true, "menu key shows again")
+
+-- 7b. keybind tersimpan + hapus
+local files = {}
+writefile = function(path, data) files[path] = data end
+readfile = function(path) return files[path] end
+isfile = function(path) return files[path] ~= nil end
+isfolder = function() return true end
+makefolder = function() end
+local stabKey = control("Fake stab", "Key")
+local shotKey = control("Fake gunshot", "Key")
+UI.lastCapture = -1
+click(stabKey)
+press(Enum.KeyCode.H)
+check(stabKey.Text == "H" and files["NoctisENIX/settings.json"] ~= nil, "bind saved to settings.json")
+check(string.find(files["NoctisENIX/settings.json"] or "", '"Fake stab":"H"', 1, true) ~= nil, "saved json has the key: " .. tostring(files["NoctisENIX/settings.json"]))
+-- tombol yang sama ke fitur lain: ikatan lama lepas
+click(shotKey)
+press(Enum.KeyCode.H)
+check(shotKey.Text == "H" and stabKey.Text == "NONE", "same key moves to the new feature")
+-- klik kanan = hapus
+rawget(shotKey, "_signals").MouseButton2Click:Fire()
+check(shotKey.Text == "NONE", "right-click clears a keybind")
+-- menu key nggak bisa diambil fitur lain
+click(stabKey)
+press(Enum.KeyCode.RightShift)
+check(stabKey.Text == "NONE" and menuBind.key == Enum.KeyCode.RightShift, "menu key is protected")
+-- muat ulang dari file
+click(stabKey)
+press(Enum.KeyCode.J)
+local saved = files["NoctisENIX/settings.json"]
+for _, b in ipairs(UI.binds) do if b.id == "Fake stab" then b.key = nil end end
+UI.renderChip(UI.bindsById["Fake stab"])
+check(stabKey.Text == "NONE", "cleared in memory")
+files["NoctisENIX/settings.json"] = saved
+check(UI.loadSettings() == true and stabKey.Text == "J", "keybind restored from settings.json")
+-- clear all (menu key tetap)
+click(control("Clear all keybinds", "Action"))
+check(stabKey.Text == "NONE" and menuBind.key == Enum.KeyCode.RightShift, "clear all keeps the menu key")
+-- menu key di-clear = balik ke default
+local menuChip = menuBind.chip
+rawget(menuChip, "_signals").MouseButton2Click:Fire()
+check(menuBind.key == Enum.KeyCode.RightShift, "menu key reset to default, never empty")
+writefile, readfile, isfile, isfolder, makefolder = nil, nil, nil, nil, nil
+UI.lastCapture = -1
 
 -- 8. minimize
 click(UI.minButton)
