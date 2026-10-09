@@ -113,6 +113,5 @@ Setelah mengubah `src/`: `python3 tools/build.py`, lalu jalankan tes di `tests/`
 
 ## Catatan keamanan dan risiko
 
-* Script referensi `04Jordn/SUMMIT` di-obfuscate (Luraph). Kode NoctisENIX tidak diambil dari sana. Yang dipakai hanya nama-nama internal game yang terbaca dari tabel konstantanya, dan semua nama itu tetap dicek ulang saat runtime.
 * NoctisENIX tidak melakukan request jaringan keluar. Inspector hanya menulis file lokal di folder workspace executor.
 * Fitur seperti ghost dan teleport bisa dideteksi server game. Menjalankan script di executor melanggar Terms of Use Roblox dan berisiko akun terkena ban. Pakai akun alt.
