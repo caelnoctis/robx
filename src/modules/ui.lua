@@ -15,22 +15,27 @@ return function(env)
     local UserInputService, RunService, TweenService = env.UserInputService, env.RunService, env.TweenService
     local S, Config = env.S, env.Config
 
+    -- Tema "Phantom": merah-hitam-putih ala menu Persona 5 Royal (fan-inspired). Semua bentuk
+    -- digambar dari Frame/UIStroke/UIGradient, nggak ada gambar atau aset game.
     local Theme = {
-        Bg = Color3.fromRGB(12, 11, 18),
-        Side = Color3.fromRGB(16, 14, 25),
-        Card = Color3.fromRGB(23, 21, 35),
-        CardHover = Color3.fromRGB(30, 27, 46),
-        Stroke = Color3.fromRGB(44, 39, 66),
-        Accent = Color3.fromRGB(150, 108, 255),
-        Accent2 = Color3.fromRGB(96, 165, 255),
-        Text = Color3.fromRGB(244, 242, 255),
-        Sub = Color3.fromRGB(164, 158, 190),
-        Muted = Color3.fromRGB(112, 106, 140),
-        Off = Color3.fromRGB(50, 46, 72),
-        Chip = Color3.fromRGB(34, 31, 50),
-        Good = Color3.fromRGB(88, 222, 150),
-        Warn = Color3.fromRGB(255, 186, 78),
-        Bad = Color3.fromRGB(255, 92, 104),
+        Bg = Color3.fromRGB(15, 15, 15),
+        Side = Color3.fromRGB(23, 6, 7),
+        Card = Color3.fromRGB(26, 23, 23),
+        CardHover = Color3.fromRGB(42, 17, 18),
+        Stroke = Color3.fromRGB(58, 51, 51),
+        Accent = Color3.fromRGB(229, 25, 28),
+        Accent2 = Color3.fromRGB(30, 203, 225),
+        Text = Color3.fromRGB(253, 253, 253),
+        Sub = Color3.fromRGB(201, 194, 194),
+        Muted = Color3.fromRGB(140, 130, 130),
+        Off = Color3.fromRGB(59, 52, 52),
+        Chip = Color3.fromRGB(38, 32, 32),
+        Good = Color3.fromRGB(59, 227, 160),
+        Warn = Color3.fromRGB(242, 193, 78),
+        Bad = Color3.fromRGB(255, 51, 70),
+        Ink = Color3.fromRGB(0, 0, 0),
+        Paper = Color3.fromRGB(253, 253, 253),
+        RedDeep = Color3.fromRGB(158, 15, 20),
     }
     UI.Theme = Theme
 
@@ -57,8 +62,8 @@ return function(env)
     end
     UI.new = new
 
-    local function tween(inst, props, t)
-        local info = TweenInfo.new(t or 0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local function tweenEx(inst, props, t, style, dir)
+        local info = TweenInfo.new(t or 0.16, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out)
         local ok, tw = pcall(TweenService.Create, TweenService, inst, info, props)
         if ok and tw then
             tw:Play()
@@ -70,11 +75,12 @@ return function(env)
             end
         end
     end
-    UI.tween = tween
+    UI.tweenEx = tweenEx
 
-    local function corner(inst, r)
-        return new("UICorner", { CornerRadius = UDim.new(0, r or 8) }, inst)
+    local function tween(inst, props, t)
+        tweenEx(inst, props, t)
     end
+    UI.tween = tween
 
     local function stroke(inst, color, thickness, transparency)
         return new("UIStroke", {
@@ -85,6 +91,117 @@ return function(env)
         }, inst)
     end
 
+    -- Garis tegas: sudut tajam (Miter), ciri khas menu P5.
+    local function sharp(inst, color, thickness, transparency)
+        local st = stroke(inst, color, thickness, transparency)
+        st.LineJoinMode = Enum.LineJoinMode.Miter
+        return st
+    end
+
+    -- Potongan dekorasi: nggak pernah nangkep input, cuma hiasan.
+    local function slab(parent, props)
+        props.BorderSizePixel = 0
+        props.Active = false
+        return new("Frame", props, parent)
+    end
+    UI.slab = slab
+
+    -- Bintang bergerigi: beberapa kotak yang diputar di titik tengah yang sama.
+    local function burst(parent, size, pos, colors, z)
+        local holder = new("Frame", {
+            Name = "Burst",
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = pos,
+            Size = UDim2.fromOffset(size, size),
+            BackgroundTransparency = 1,
+            ZIndex = z or 1,
+        }, parent)
+        for layer, c in ipairs(colors) do
+            local s = size - (layer - 1) * 6
+            for k = 0, 2 do
+                slab(holder, {
+                    AnchorPoint = Vector2.new(0.5, 0.5),
+                    Position = UDim2.fromScale(0.5, 0.5),
+                    Size = UDim2.fromOffset(s * 0.72, s * 0.72),
+                    Rotation = k * 30 + layer * 7,
+                    BackgroundColor3 = c,
+                    ZIndex = (z or 1) + layer,
+                })
+            end
+        end
+        return holder
+    end
+    UI.burst = burst
+
+    -- Judul "surat kaleng": tiap huruf kotak sendiri, miring & selang-seling hitam/putih.
+    -- Deterministik (seed dari teksnya), jadi tampilannya sama tiap kali di-load.
+    local RANSOM_FONTS = {
+        Enum.Font.GothamBlack, Enum.Font.Bangers, Enum.Font.GothamBlack, Enum.Font.Oswald,
+        Enum.Font.Bodoni, Enum.Font.GothamBlack, Enum.Font.SpecialElite, Enum.Font.RobotoCondensed,
+    }
+    local function ransom(parent, word, size, pos, z)
+        local h = 7
+        for i = 1, #word do
+            h = (h * 31 + string.byte(word, i)) % 2147483647
+        end
+        local function rnd()
+            h = (h * 1103515245 + 12345) % 2147483648
+            return h / 2147483648
+        end
+        local holder = new("Frame", {
+            Name = "Ransom",
+            Position = pos,
+            Size = UDim2.fromOffset(0, size + 8),
+            BackgroundTransparency = 1,
+            ZIndex = z or 1,
+        }, parent)
+        local x, lastInk, run = 0, nil, 0
+        for i = 1, #word do
+            local ch = string.sub(word, i, i)
+            local first = i == 1
+            local scale = first and 1.18 or (0.84 + rnd() * 0.16)
+            local s = math.floor(size * scale)
+            local w = math.floor(s * ((ch == "W" or ch == "M") and 0.95 or (ch == "I" and 0.52 or 0.78)))
+            local ink
+            if first or (i % 5 == 0) then
+                ink = "red"
+            else
+                ink = rnd() < 0.5 and "black" or "white"
+                if ink == lastInk then
+                    run = run + 1
+                    if run >= 2 then
+                        ink = ink == "black" and "white" or "black"
+                        run = 0
+                    end
+                else
+                    run = 0
+                end
+            end
+            lastInk = ink
+            local bg = ink == "red" and Theme.Accent or (ink == "black" and Theme.Ink or Theme.Paper)
+            local fg = ink == "white" and Theme.Ink or Theme.Paper
+            local box = new("TextLabel", {
+                Name = "Letter",
+                AnchorPoint = Vector2.new(0, 0.5),
+                Position = UDim2.new(0, x, 0.5, math.floor((rnd() - 0.5) * 5)),
+                Size = UDim2.fromOffset(w, s),
+                Rotation = first and -6 or math.floor((rnd() - 0.5) * 18),
+                BackgroundColor3 = bg,
+                BorderSizePixel = 0,
+                Font = first and Enum.Font.GothamBlack or RANSOM_FONTS[1 + math.floor(rnd() * #RANSOM_FONTS)],
+                TextSize = math.floor(s * 0.82),
+                TextColor3 = fg,
+                Text = ch,
+                ZIndex = (z or 1) + 1,
+            }, holder)
+            sharp(box, ink == "white" and Theme.Ink or Theme.Paper, first and 2 or 1.5, 0)
+            x = x + w - 1
+        end
+        holder.Size = UDim2.fromOffset(x, size + 8)
+        return holder, x
+    end
+    UI.ransom = ransom
+
     local function pad(inst, t, r, b, l)
         return new("UIPadding", {
             PaddingTop = UDim.new(0, t),
@@ -94,16 +211,9 @@ return function(env)
         }, inst)
     end
 
-    local function accentGradient(inst, rotation)
-        return new("UIGradient", {
-            Color = ColorSequence.new(Theme.Accent, Theme.Accent2),
-            Rotation = rotation or 0,
-        }, inst)
-    end
-
     local function text(props, parent)
         props.BackgroundTransparency = props.BackgroundTransparency or 1
-        props.Font = props.Font or Enum.Font.Gotham
+        props.Font = props.Font or Enum.Font.GothamMedium
         props.TextColor3 = props.TextColor3 or Theme.Text
         props.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
         props.BorderSizePixel = 0
@@ -137,16 +247,17 @@ return function(env)
             Name = "Chip",
             AutomaticSize = Enum.AutomaticSize.X,
             Size = UDim2.new(0, 0, 0, 18),
-            BackgroundTransparency = 0.82,
+            BackgroundTransparency = 0.78,
             BackgroundColor3 = color,
             TextColor3 = color,
-            Font = Enum.Font.GothamBold,
+            Font = Enum.Font.GothamBlack,
             TextSize = 10,
             Text = label,
             LayoutOrder = order or 0,
+            Rotation = -2,
             TextXAlignment = Enum.TextXAlignment.Center,
         }, parent)
-        corner(c, 5)
+        sharp(c, color, 1, 0.45)
         pad(c, 0, 7, 0, 7)
         return c
     end
@@ -156,38 +267,65 @@ return function(env)
     -- Window
     ------------------------------------------------------------------
     local screen = env.screen
-    local WIN_W, WIN_H, HEADER_H, SIDE_W = 780, 520, 54, 200
+    local WIN_W, WIN_H, HEADER_H, SIDE_W = 780, 520, 58, 200
 
+    -- Main = wadah transparan (posisi, drag, ukuran). Di dalamnya: bayangan merah, badan hitam,
+    -- lalu header / sidebar / konten di ZIndex lebih tinggi (ZIndexBehavior = Sibling).
     local main = new("Frame", {
         Name = "Main",
         Size = UDim2.fromOffset(WIN_W, WIN_H),
         Position = UDim2.new(0.5, -WIN_W / 2, 0.5, -WIN_H / 2),
-        BackgroundColor3 = Theme.Bg,
+        BackgroundTransparency = 1,
         BorderSizePixel = 0,
         Active = true,
     }, screen)
-    corner(main, 14)
-    stroke(main, Theme.Stroke, 1, 0)
     UI.main = main
     UI.scale = new("UIScale", { Scale = 1 }, main)
 
-    -- Glow halus di atas window.
+    slab(main, {
+        Name = "Shadow",
+        Position = UDim2.fromOffset(9, 9),
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Theme.Accent,
+        ZIndex = 0,
+    })
+    local body = slab(main, {
+        Name = "Body",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Theme.Bg,
+        ZIndex = 1,
+    })
+    sharp(body, Theme.Paper, 2, 0)
+
+    -- Hiasan latar: garis-garis miring tipis di pojok kanan atas.
     local glow = new("Frame", {
         Name = "Glow",
-        Size = UDim2.new(1, 0, 0, 160),
-        BackgroundColor3 = Theme.Accent,
-        BackgroundTransparency = 0.86,
-        BorderSizePixel = 0,
-        ZIndex = 0,
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        ZIndex = 2,
     }, main)
-    corner(glow, 14)
-    new("UIGradient", {
-        Rotation = 90,
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.1),
-            NumberSequenceKeypoint.new(1, 1),
-        }),
-    }, glow)
+    do
+        local stripes = slab(glow, {
+            Name = "Stripes",
+            AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, 0, 0, 0),
+            Size = UDim2.fromOffset(300, HEADER_H),
+            BackgroundColor3 = Theme.Paper,
+            BackgroundTransparency = 0.9,
+            ZIndex = 2,
+        })
+        -- 4 garis keras = 16 keypoint (batasnya 20).
+        local kp = {}
+        for i = 0, 3 do
+            local a0 = i / 4
+            kp[#kp + 1] = NumberSequenceKeypoint.new(a0, 1)
+            kp[#kp + 1] = NumberSequenceKeypoint.new(a0 + 0.12, 1)
+            kp[#kp + 1] = NumberSequenceKeypoint.new(a0 + 0.121, 0)
+            kp[#kp + 1] = NumberSequenceKeypoint.new(math.min(a0 + 0.2, 1), 0)
+        end
+        kp[#kp + 1] = NumberSequenceKeypoint.new(1, 0)
+        new("UIGradient", { Rotation = -60, Transparency = NumberSequence.new(kp) }, stripes)
+    end
 
     -- Modal = true bikin mouse kebuka (tidak terkunci di tengah) selama tombol ini terlihat.
     UI.modal = new("TextButton", {
@@ -202,79 +340,125 @@ return function(env)
         Name = "Header",
         Size = UDim2.new(1, 0, 0, HEADER_H),
         BackgroundTransparency = 1,
+        ZIndex = 4,
     }, main)
-    new("Frame", {
+    slab(header, {
         Name = "Divider",
-        Position = UDim2.new(0, 0, 1, -1),
-        Size = UDim2.new(1, 0, 0, 1),
-        BackgroundColor3 = Theme.Stroke,
-        BorderSizePixel = 0,
-    }, header)
+        Position = UDim2.new(0, 0, 1, -4),
+        Size = UDim2.new(1, 0, 0, 4),
+        BackgroundColor3 = Theme.Accent,
+        ZIndex = 4,
+    })
+    slab(header, {
+        Name = "Divider2",
+        Position = UDim2.new(0, 0, 1, 0),
+        Size = UDim2.new(1, 0, 0, 2),
+        BackgroundColor3 = Theme.Paper,
+        ZIndex = 4,
+    })
 
-    local logo = new("Frame", {
-        Size = UDim2.fromOffset(32, 32),
-        Position = UDim2.fromOffset(16, 11),
-        BackgroundColor3 = Color3.new(1, 1, 1),
-        BorderSizePixel = 0,
-    }, header)
-    corner(logo, 9)
-    accentGradient(logo, 45)
+    -- Slab merah miring di belakang judul (sengaja keluar sedikit dari window).
+    slab(header, {
+        Name = "TitleSlabBack",
+        Position = UDim2.fromOffset(-10, 4),
+        Size = UDim2.fromOffset(268, 50),
+        Rotation = -3,
+        BackgroundColor3 = Theme.Paper,
+        ZIndex = 4,
+    })
+    slab(header, {
+        Name = "TitleSlab",
+        Position = UDim2.fromOffset(-14, 2),
+        Size = UDim2.fromOffset(262, 50),
+        Rotation = -3,
+        BackgroundColor3 = Theme.Accent,
+        ZIndex = 5,
+    })
+
+    -- Logo: bintang bergerigi + N.
+    local logo = burst(header, 38, UDim2.fromOffset(30, HEADER_H / 2 - 1), { Theme.Paper, Theme.Ink }, 6)
+    logo.Name = "Logo"
     text({
         Size = UDim2.fromScale(1, 1),
-        Font = Enum.Font.GothamBlack,
-        TextSize = 18,
+        Font = Enum.Font.Bangers,
+        TextSize = 22,
         Text = "N",
+        Rotation = -8,
+        TextColor3 = Theme.Paper,
         TextXAlignment = Enum.TextXAlignment.Center,
+        ZIndex = 10,
     }, logo)
 
-    text({
-        Position = UDim2.fromOffset(58, 0),
-        Size = UDim2.new(0, 150, 1, 0),
-        Font = Enum.Font.GothamBlack,
-        TextSize = 19,
-        RichText = true,
-        Text = 'NOCTIS<font color="' .. hex(Theme.Accent) .. '">ENIX</font>',
-    }, header)
+    local title = ransom(header, "NOCTISENIX", 25, UDim2.new(0, 54, 0.5, -19), 7)
+    title.Name = "Title"
 
     local chips = new("Frame", {
-        Position = UDim2.fromOffset(196, 0),
-        Size = UDim2.new(0, 260, 1, 0),
+        Position = UDim2.fromOffset(268, 0),
+        Size = UDim2.new(0, 260, 1, -4),
         BackgroundTransparency = 1,
+        ZIndex = 6,
     }, header)
     new("UIListLayout", {
         FillDirection = Enum.FillDirection.Horizontal,
         VerticalAlignment = Enum.VerticalAlignment.Center,
-        Padding = UDim.new(0, 6),
+        Padding = UDim.new(0, 8),
         SortOrder = Enum.SortOrder.LayoutOrder,
     }, chips)
-    chip(chips, "MAFIA  ACT II", Theme.Accent, 1)
-    chip(chips, "v" .. tostring(Config.Version), Theme.Sub, 2)
+    local actTag = text({
+        Name = "Tag",
+        AutomaticSize = Enum.AutomaticSize.X,
+        Size = UDim2.new(0, 0, 0, 20),
+        BackgroundTransparency = 0,
+        BackgroundColor3 = Theme.Paper,
+        TextColor3 = Theme.Ink,
+        Font = Enum.Font.GothamBlack,
+        TextSize = 11,
+        Text = "MAFIA  ACT II",
+        Rotation = -4,
+        LayoutOrder = 1,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ZIndex = 6,
+    }, chips)
+    pad(actTag, 0, 8, 0, 8)
+    text({
+        Name = "Version",
+        AutomaticSize = Enum.AutomaticSize.X,
+        Size = UDim2.new(0, 0, 0, 20),
+        Font = Enum.Font.SpecialElite,
+        TextSize = 13,
+        TextColor3 = Theme.Sub,
+        Text = "v" .. tostring(Config.Version),
+        LayoutOrder = 2,
+        ZIndex = 6,
+    }, chips)
 
     local function headerButton(label, x, hoverColor)
         local b = new("TextButton", {
             Size = UDim2.fromOffset(30, 30),
-            Position = UDim2.new(1, x, 0.5, -15),
-            BackgroundColor3 = Theme.Card,
-            BackgroundTransparency = 1,
+            Position = UDim2.new(1, x, 0.5, -17),
+            BackgroundColor3 = Theme.Ink,
+            BackgroundTransparency = 0,
             BorderSizePixel = 0,
-            Font = Enum.Font.GothamBold,
-            TextSize = 16,
-            TextColor3 = Theme.Sub,
+            Font = Enum.Font.GothamBlack,
+            TextSize = 15,
+            TextColor3 = Theme.Paper,
             Text = label,
             AutoButtonColor = false,
+            ZIndex = 6,
         }, header)
-        corner(b, 8)
+        local st = sharp(b, Theme.Paper, 2, 0)
         connect(b.MouseEnter, function()
-            tween(b, { BackgroundTransparency = 0, TextColor3 = hoverColor or Theme.Text })
+            tweenEx(b, { BackgroundColor3 = hoverColor or Theme.Accent, Rotation = -8 }, 0.12, Enum.EasingStyle.Back)
+            st.Color = Theme.Paper
         end)
         connect(b.MouseLeave, function()
-            tween(b, { BackgroundTransparency = 1, TextColor3 = Theme.Sub })
+            tweenEx(b, { BackgroundColor3 = Theme.Ink, Rotation = 0 }, 0.1)
         end)
         return b
     end
-    UI.closeButton = headerButton("X", -44, Theme.Bad)
+    UI.closeButton = headerButton("X", -46, Theme.Bad)
     UI.closeButton.Name = "Close"
-    UI.minButton = headerButton("-", -80, Theme.Text)
+    UI.minButton = headerButton("-", -84, Theme.Accent)
     UI.minButton.Name = "Minimize"
 
     -- Drag lewat header.
@@ -300,88 +484,115 @@ return function(env)
         end)
     end
 
-    -- Sidebar
+    -- Sidebar: hitam kemerahan, garis putih di kanan, serpihan merah samar di bawah.
     local sidebar = new("Frame", {
         Name = "Sidebar",
-        Position = UDim2.fromOffset(0, HEADER_H),
-        Size = UDim2.new(0, SIDE_W, 1, -HEADER_H),
+        Position = UDim2.fromOffset(2, HEADER_H + 2),
+        Size = UDim2.new(0, SIDE_W - 2, 1, -HEADER_H - 4),
         BackgroundColor3 = Theme.Side,
         BorderSizePixel = 0,
+        ZIndex = 3,
     }, main)
-    corner(sidebar, 14)
-    -- Tutup sudut atas & kanan sidebar biar cuma kiri-bawah yang membulat.
-    new("Frame", { Size = UDim2.new(1, 0, 0, 16), BackgroundColor3 = Theme.Side, BorderSizePixel = 0 }, sidebar)
-    new("Frame", {
-        Position = UDim2.new(1, -16, 0, 0),
-        Size = UDim2.new(0, 16, 1, 0),
-        BackgroundColor3 = Theme.Side,
-        BorderSizePixel = 0,
-    }, sidebar)
-    new("Frame", {
-        Position = UDim2.new(1, -1, 0, 0),
-        Size = UDim2.new(0, 1, 1, 0),
-        BackgroundColor3 = Theme.Stroke,
-        BorderSizePixel = 0,
-    }, sidebar)
+    slab(sidebar, {
+        Name = "Edge",
+        Position = UDim2.new(1, -2, 0, 0),
+        Size = UDim2.new(0, 2, 1, 0),
+        BackgroundColor3 = Theme.Paper,
+        BackgroundTransparency = 0.6,
+        ZIndex = 3,
+    })
+    slab(sidebar, {
+        Name = "Shard",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 1, -112),
+        Size = UDim2.fromOffset(170, 30),
+        Rotation = -18,
+        BackgroundColor3 = Theme.Accent,
+        BackgroundTransparency = 0.86,
+        ZIndex = 3,
+    })
+    slab(sidebar, {
+        Name = "Shard2",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 14, 1, -92),
+        Size = UDim2.fromOffset(120, 4),
+        Rotation = -18,
+        BackgroundColor3 = Theme.Paper,
+        BackgroundTransparency = 0.85,
+        ZIndex = 3,
+    })
     UI.sidebar = sidebar
 
     local nav = new("ScrollingFrame", {
         Name = "Nav",
         Position = UDim2.fromOffset(0, 8),
-        Size = UDim2.new(1, -1, 1, -84),
+        Size = UDim2.new(1, -2, 1, -84),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         ScrollBarThickness = 0,
         CanvasSize = UDim2.new(),
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ZIndex = 4,
     }, sidebar)
     new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, nav)
-    pad(nav, 4, 10, 8, 10)
+    pad(nav, 4, 12, 8, 10)
 
     -- Profil di bawah sidebar.
     local profile = new("Frame", {
         Name = "Profile",
         Position = UDim2.new(0, 0, 1, -70),
-        Size = UDim2.new(1, -1, 0, 70),
+        Size = UDim2.new(1, -2, 0, 70),
         BackgroundTransparency = 1,
+        ZIndex = 4,
     }, sidebar)
-    new("Frame", {
-        Position = UDim2.fromOffset(14, 0),
-        Size = UDim2.new(1, -28, 0, 1),
-        BackgroundColor3 = Theme.Stroke,
-        BorderSizePixel = 0,
-    }, profile)
-    local avatar = new("ImageLabel", {
-        Position = UDim2.fromOffset(16, 16),
+    slab(profile, {
+        Position = UDim2.fromOffset(12, 0),
+        Size = UDim2.new(1, -24, 0, 2),
+        BackgroundColor3 = Theme.Accent,
+        ZIndex = 4,
+    })
+    slab(profile, {
+        Position = UDim2.fromOffset(19, 19),
         Size = UDim2.fromOffset(38, 38),
-        BackgroundColor3 = Theme.Card,
+        Rotation = -6,
+        BackgroundColor3 = Theme.Accent,
+        ZIndex = 4,
+    })
+    local avatar = new("ImageLabel", {
+        Position = UDim2.fromOffset(15, 15),
+        Size = UDim2.fromOffset(38, 38),
+        Rotation = 3,
+        BackgroundColor3 = Theme.Ink,
         BorderSizePixel = 0,
         Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(env.LocalPlayer.UserId) .. "&w=48&h=48",
+        ZIndex = 5,
     }, profile)
-    corner(avatar, 19)
-    stroke(avatar, Theme.Accent, 1.5, 0.2)
+    sharp(avatar, Theme.Paper, 2, 0)
     text({
-        Position = UDim2.fromOffset(64, 17),
-        Size = UDim2.new(1, -76, 0, 18),
-        Font = Enum.Font.GothamBold,
+        Position = UDim2.fromOffset(66, 17),
+        Size = UDim2.new(1, -78, 0, 18),
+        Font = Enum.Font.GothamBlack,
         TextSize = 14,
         TextTruncate = Enum.TextTruncate.AtEnd,
         Text = env.LocalPlayer.DisplayName,
+        ZIndex = 5,
     }, profile)
     text({
-        Position = UDim2.fromOffset(64, 35),
-        Size = UDim2.new(1, -76, 0, 16),
+        Position = UDim2.fromOffset(66, 35),
+        Size = UDim2.new(1, -78, 0, 16),
         TextSize = 12,
         TextColor3 = Theme.Muted,
         TextTruncate = Enum.TextTruncate.AtEnd,
         Text = "@" .. env.LocalPlayer.Name,
+        ZIndex = 5,
     }, profile)
 
     local contentArea = new("Frame", {
         Name = "Content",
-        Position = UDim2.fromOffset(SIDE_W, HEADER_H),
-        Size = UDim2.new(1, -SIDE_W, 1, -HEADER_H),
+        Position = UDim2.fromOffset(SIDE_W, HEADER_H + 2),
+        Size = UDim2.new(1, -SIDE_W - 2, 1, -HEADER_H - 4),
         BackgroundTransparency = 1,
+        ZIndex = 3,
     }, main)
     UI.contentArea = contentArea
 
@@ -389,25 +600,38 @@ return function(env)
     -- Navigasi
     ------------------------------------------------------------------
     function UI.group(name)
-        return text({
+        local g = text({
             Name = "Group",
-            Size = UDim2.new(1, 0, 0, 26),
-            Font = Enum.Font.GothamBold,
+            Size = UDim2.new(1, 0, 0, 28),
+            Font = Enum.Font.GothamBlack,
             TextSize = 11,
-            TextColor3 = Theme.Muted,
+            TextColor3 = Theme.Accent,
             TextYAlignment = Enum.TextYAlignment.Bottom,
-            Text = "  " .. string.upper(name),
+            Text = "  //  " .. string.upper(name),
             LayoutOrder = UI.nextOrder(nav),
         }, nav)
+        pad(g, 0, 0, 3, 0)
+        return g
     end
 
+    -- Tab aktif: slab putih miring di atas slab merah, teks hitam. Hover: slab hitam.
     function UI.selectTab(target)
         for _, t in ipairs(UI.tabs) do
             local active = t == target
             t.page.Visible = active
-            tween(t.button, { BackgroundTransparency = active and 0.8 or 1 })
-            tween(t.label, { TextColor3 = active and Theme.Text or Theme.Sub })
             t.bar.Visible = active
+            t.hover.Visible = false
+            tween(t.label, { TextColor3 = active and Theme.Ink or Theme.Sub })
+            t.icon.TextColor3 = active and Theme.Ink or Theme.Text
+            t.label.Font = active and Enum.Font.GothamBlack or Enum.Font.GothamBold
+            if active then
+                t.front.Rotation = -6
+                tweenEx(t.front, { Rotation = -2 }, 0.22, Enum.EasingStyle.Back)
+                -- Judul halaman masuk dari kanan, menyentak sedikit.
+                t.heading.Position = UDim2.fromOffset(t.headingX + 34, t.headingY)
+                t.heading.Rotation = -9
+                tweenEx(t.heading, { Position = UDim2.fromOffset(t.headingX, t.headingY), Rotation = -3 }, 0.26, Enum.EasingStyle.Back)
+            end
         end
         UI.current = target
     end
@@ -416,37 +640,65 @@ return function(env)
         local button = new("TextButton", {
             Name = "Nav_" .. name,
             Size = UDim2.new(1, 0, 0, 36),
-            BackgroundColor3 = Theme.Accent,
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
             Text = "",
             AutoButtonColor = false,
             LayoutOrder = UI.nextOrder(nav),
         }, nav)
-        corner(button, 9)
+        local hover = slab(button, {
+            Name = "Hover",
+            Position = UDim2.fromOffset(2, 3),
+            Size = UDim2.new(1, -4, 1, -6),
+            BackgroundColor3 = Theme.Ink,
+            Visible = false,
+        })
+        sharp(hover, Theme.Accent, 1, 0.3)
         local bar = new("Frame", {
-            Position = UDim2.new(0, 0, 0.5, -9),
-            Size = UDim2.fromOffset(3, 18),
-            BackgroundColor3 = Color3.new(1, 1, 1),
-            BorderSizePixel = 0,
+            Name = "Selected",
+            Size = UDim2.fromScale(1, 1),
+            BackgroundTransparency = 1,
             Visible = false,
         }, button)
-        corner(bar, 2)
-        accentGradient(bar, 90)
-        text({
-            Position = UDim2.fromOffset(12, 0),
+        slab(bar, {
+            Name = "Back",
+            Position = UDim2.fromOffset(5, 5),
+            Size = UDim2.new(1, -4, 1, -6),
+            Rotation = -4,
+            BackgroundColor3 = Theme.Accent,
+        })
+        local front = slab(bar, {
+            Name = "Front",
+            Position = UDim2.fromOffset(0, 2),
+            Size = UDim2.new(1, -4, 1, -6),
+            Rotation = -2,
+            BackgroundColor3 = Theme.Paper,
+        })
+        -- Ujung cyan kecil: satu-satunya warna dingin, penanda "dipilih".
+        slab(bar, {
+            Name = "Tip",
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(1, -8, 0.5, -1),
+            Size = UDim2.fromOffset(9, 9),
+            Rotation = 45,
+            BackgroundColor3 = Theme.Accent2,
+        })
+        local iconLabel = text({
+            Position = UDim2.fromOffset(10, 0),
             Size = UDim2.new(0, 22, 1, 0),
-            TextSize = 16,
+            TextSize = 15,
             Text = icon or "",
             TextXAlignment = Enum.TextXAlignment.Center,
+            ZIndex = 2,
         }, button)
         local label = text({
-            Position = UDim2.fromOffset(42, 0),
-            Size = UDim2.new(1, -48, 1, 0),
-            Font = Enum.Font.GothamMedium,
+            Position = UDim2.fromOffset(40, 0),
+            Size = UDim2.new(1, -56, 1, 0),
+            Font = Enum.Font.GothamBold,
             TextSize = 14,
             TextColor3 = Theme.Sub,
-            Text = name,
+            Text = string.upper(name),
+            ZIndex = 2,
         }, button)
 
         local page = new("Frame", {
@@ -455,15 +707,31 @@ return function(env)
             BackgroundTransparency = 1,
             Visible = false,
         }, contentArea)
-        text({
-            Position = UDim2.fromOffset(26, 16),
-            Size = UDim2.new(1, -52, 0, 26),
-            Font = Enum.Font.GothamBold,
-            TextSize = 22,
-            Text = name,
+        -- Judul halaman: label putih di slab merah miring, bayangan hitam.
+        local headingX, headingY = 22, 12
+        local heading = new("Frame", {
+            Name = "Heading",
+            Position = UDim2.fromOffset(headingX, headingY),
+            Size = UDim2.fromOffset(0, 34),
+            AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundColor3 = Theme.Accent,
+            BorderSizePixel = 0,
+            Rotation = -3,
         }, page)
+        sharp(heading, Theme.Paper, 2, 0)
+        pad(heading, 0, 14, 0, 12)
         text({
-            Position = UDim2.fromOffset(26, 44),
+            Name = "Title",
+            Size = UDim2.fromScale(0, 1),
+            AutomaticSize = Enum.AutomaticSize.X,
+            Font = Enum.Font.GothamBlack,
+            TextSize = 22,
+            TextColor3 = Theme.Paper,
+            Text = string.upper(name),
+        }, heading)
+        text({
+            Name = "Subtitle",
+            Position = UDim2.fromOffset(26, 54),
             Size = UDim2.new(1, -52, 0, 18),
             TextSize = 13,
             TextColor3 = Theme.Sub,
@@ -472,13 +740,13 @@ return function(env)
         }, page)
         local scroll = new("ScrollingFrame", {
             Name = "Scroll",
-            Position = UDim2.fromOffset(0, 72),
-            Size = UDim2.new(1, 0, 1, -72),
+            Position = UDim2.fromOffset(0, 80),
+            Size = UDim2.new(1, 0, 1, -80),
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
-            ScrollBarThickness = 4,
+            ScrollBarThickness = 5,
             ScrollBarImageColor3 = Theme.Accent,
-            ScrollBarImageTransparency = 0.3,
+            ScrollBarImageTransparency = 0,
             CanvasSize = UDim2.new(),
             AutomaticCanvasSize = Enum.AutomaticSize.Y,
             ScrollingDirection = Enum.ScrollingDirection.Y,
@@ -486,16 +754,23 @@ return function(env)
         new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, scroll)
         pad(scroll, 4, 22, 18, 26)
 
-        local tab = { name = name, button = button, page = page, scroll = scroll, label = label, bar = bar }
+        local tab = {
+            name = name, button = button, page = page, scroll = scroll, label = label, bar = bar,
+            hover = hover, front = front, icon = iconLabel, heading = heading, headingX = headingX, headingY = headingY,
+        }
         UI.tabs[#UI.tabs + 1] = tab
         connect(button.MouseEnter, function()
             if UI.current ~= tab then
-                tween(button, { BackgroundTransparency = 0.92 })
+                hover.Visible = true
+                hover.Position = UDim2.fromOffset(-10, 3)
+                tweenEx(hover, { Position = UDim2.fromOffset(2, 3) }, 0.12, Enum.EasingStyle.Quint)
+                tween(label, { TextColor3 = Theme.Text }, 0.1)
             end
         end)
         connect(button.MouseLeave, function()
+            hover.Visible = false
             if UI.current ~= tab then
-                tween(button, { BackgroundTransparency = 1 })
+                tween(label, { TextColor3 = Theme.Sub }, 0.1)
             end
         end)
         connect(button.MouseButton1Click, function()
@@ -507,17 +782,37 @@ return function(env)
     ------------------------------------------------------------------
     -- Komponen konten
     ------------------------------------------------------------------
+    -- Header seksi: tag putih miring dengan teks hitam + garis merah sampai ujung kanan.
     function UI.section(page, label)
-        return text({
+        local row = new("Frame", {
             Name = "Section",
-            Size = UDim2.new(1, 0, 0, 24),
-            Font = Enum.Font.GothamBold,
-            TextSize = 11,
-            TextColor3 = Theme.Accent,
-            TextYAlignment = Enum.TextYAlignment.Bottom,
-            Text = string.upper(label),
+            Size = UDim2.new(1, 0, 0, 34),
+            BackgroundTransparency = 1,
             LayoutOrder = UI.nextOrder(page),
         }, page)
+        slab(row, {
+            Name = "Rule",
+            Position = UDim2.new(0, 0, 1, -7),
+            Size = UDim2.new(1, 0, 0, 2),
+            BackgroundColor3 = Theme.Accent,
+        })
+        local tag = text({
+            Name = "Label",
+            Position = UDim2.fromOffset(2, 7),
+            AutomaticSize = Enum.AutomaticSize.X,
+            Size = UDim2.new(0, 0, 0, 20),
+            BackgroundTransparency = 0,
+            BackgroundColor3 = Theme.Paper,
+            Font = Enum.Font.GothamBlack,
+            TextSize = 12,
+            TextColor3 = Theme.Ink,
+            Rotation = -3,
+            Text = string.upper(label),
+            TextXAlignment = Enum.TextXAlignment.Center,
+            ZIndex = 2,
+        }, row)
+        pad(tag, 0, 10, 0, 10)
+        return tag
     end
 
     function UI.note(page, body)
@@ -525,14 +820,18 @@ return function(env)
             Name = "Note",
             Size = UDim2.new(1, 0, 0, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
-            BackgroundColor3 = Theme.Accent,
-            BackgroundTransparency = 0.93,
+            BackgroundColor3 = Color3.fromRGB(34, 12, 13),
             BorderSizePixel = 0,
             LayoutOrder = UI.nextOrder(page),
         }, page)
-        corner(card, 10)
-        stroke(card, Theme.Accent, 1, 0.75)
-        pad(card, 10, 14, 10, 14)
+        sharp(card, Theme.Accent, 1, 0.5)
+        pad(card, 10, 14, 10, 20)
+        slab(card, {
+            Name = "Bar",
+            Position = UDim2.new(0, -20, 0, -10),
+            Size = UDim2.new(0, 4, 1, 20),
+            BackgroundColor3 = Theme.Accent,
+        })
         return text({
             Size = UDim2.new(1, 0, 0, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
@@ -555,14 +854,24 @@ return function(env)
             BorderSizePixel = 0,
             LayoutOrder = UI.nextOrder(page),
         }, page)
-        corner(card, 10)
-        stroke(card, Theme.Stroke, 1, 0.25)
-        pad(card, 12, 14, 12, 14)
+        local cardStroke = sharp(card, Theme.Stroke, 1, 0)
+        pad(card, 12, 14, 12, 18)
+        -- Strip merah di kiri; melebar & stroke memerah waktu hover.
+        local strip = slab(card, {
+            Name = "Strip",
+            Position = UDim2.new(0, -18, 0, -12),
+            Size = UDim2.new(0, 3, 1, 24),
+            BackgroundColor3 = Theme.Accent,
+        })
         connect(card.MouseEnter, function()
-            tween(card, { BackgroundColor3 = Theme.CardHover })
+            tween(card, { BackgroundColor3 = Theme.CardHover }, 0.1)
+            tween(strip, { Size = UDim2.new(0, 6, 1, 24) }, 0.1)
+            cardStroke.Color = Theme.Accent
         end)
         connect(card.MouseLeave, function()
-            tween(card, { BackgroundColor3 = Theme.Card })
+            tween(card, { BackgroundColor3 = Theme.Card }, 0.12)
+            tween(strip, { Size = UDim2.new(0, 3, 1, 24) }, 0.12)
+            cardStroke.Color = Theme.Stroke
         end)
 
         local left = new("Frame", {
@@ -590,7 +899,7 @@ return function(env)
             Name = "Title",
             AutomaticSize = Enum.AutomaticSize.X,
             Size = UDim2.new(0, 0, 1, 0),
-            Font = Enum.Font.GothamBold,
+            Font = Enum.Font.GothamBlack,
             TextSize = 14,
             Text = title,
             LayoutOrder = 1,
@@ -641,7 +950,8 @@ return function(env)
             return
         end
         kb.Text = bind.key and bind.key.Name or "NONE"
-        kb.TextColor3 = bind.key and Theme.Text or Theme.Sub
+        kb.TextColor3 = bind.key and Theme.Paper or Theme.Muted
+        kb.BackgroundColor3 = Theme.Ink
     end
 
     function UI.saveSettings()
@@ -748,18 +1058,23 @@ return function(env)
         local kb = new("TextButton", {
             Name = "Key",
             Size = UDim2.fromOffset(64, 26),
-            BackgroundColor3 = Theme.Chip,
+            BackgroundColor3 = Theme.Ink,
             BorderSizePixel = 0,
-            Font = Enum.Font.GothamBold,
+            Font = Enum.Font.GothamBlack,
             TextSize = 11,
-            TextColor3 = Theme.Sub,
+            TextColor3 = Theme.Muted,
             Text = "NONE",
             AutoButtonColor = false,
             LayoutOrder = order or 1,
             ZIndex = 4,
         }, parent)
-        corner(kb, 7)
-        stroke(kb, Theme.Stroke, 1, 0)
+        local kbStroke = sharp(kb, Theme.Paper, 1, 0.55)
+        connect(kb.MouseEnter, function()
+            kbStroke.Transparency = 0
+        end)
+        connect(kb.MouseLeave, function()
+            kbStroke.Transparency = 0.55
+        end)
         bind.chip = kb
         UI.renderChip(bind)
         connect(kb.MouseButton2Click, function()
@@ -773,7 +1088,8 @@ return function(env)
             end
             UI.capturing = true
             kb.Text = "PRESS"
-            kb.TextColor3 = Theme.Accent
+            kb.TextColor3 = Theme.Paper
+            kb.BackgroundColor3 = Theme.Accent
             local conn
             conn = UserInputService.InputBegan:Connect(function(input)
                 if input.UserInputType ~= Enum.UserInputType.Keyboard then
@@ -848,25 +1164,26 @@ return function(env)
             Text = "",
             ZIndex = 2,
         }, card)
+        -- Saklar tajam: OFF = rel abu + kotak gelap; ON = rel merah + kotak putih diputar jadi wajik.
         local switch = new("Frame", {
             Name = "Switch",
-            Size = UDim2.fromOffset(44, 24),
+            Size = UDim2.fromOffset(46, 24),
             BackgroundColor3 = Theme.Off,
             BorderSizePixel = 0,
             LayoutOrder = 2,
             ZIndex = 4,
         }, right)
-        corner(switch, 12)
-        local grad = accentGradient(switch, 0)
-        grad.Enabled = false
+        local swStroke = sharp(switch, Theme.Paper, 1, 0.7)
         local knob = new("Frame", {
-            Size = UDim2.fromOffset(18, 18),
-            Position = UDim2.fromOffset(3, 3),
-            BackgroundColor3 = Color3.new(1, 1, 1),
+            Name = "Knob",
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Size = UDim2.fromOffset(14, 14),
+            Position = UDim2.fromOffset(12, 12),
+            BackgroundColor3 = Theme.Muted,
             BorderSizePixel = 0,
             ZIndex = 5,
         }, switch)
-        corner(knob, 9)
+        local knobStroke = sharp(knob, Theme.Ink, 2, 0)
         local switchHit = new("TextButton", {
             Name = "SwitchHit",
             Size = UDim2.fromScale(1, 1),
@@ -878,9 +1195,14 @@ return function(env)
         local state = default and true or false
         local api = { card = card }
         local function render()
-            grad.Enabled = state
-            tween(switch, { BackgroundColor3 = state and Color3.new(1, 1, 1) or Theme.Off })
-            tween(knob, { Position = state and UDim2.fromOffset(23, 3) or UDim2.fromOffset(3, 3) })
+            tween(switch, { BackgroundColor3 = state and Theme.Accent or Theme.Off }, 0.12)
+            swStroke.Transparency = state and 0 or 0.7
+            knobStroke.Transparency = state and 0 or 1
+            tweenEx(knob, {
+                Position = state and UDim2.fromOffset(34, 12) or UDim2.fromOffset(12, 12),
+                Rotation = state and 45 or 0,
+                BackgroundColor3 = state and Theme.Paper or Theme.Muted,
+            }, 0.2, Enum.EasingStyle.Back)
         end
         function api.Set(value, silent)
             state = value and true or false
@@ -909,28 +1231,32 @@ return function(env)
     function UI.button(page, title, desc, callback, opts)
         local hasBind = opts and opts.bind
         local card, right = UI.card(page, title, desc, hasBind and 168 or 96, opts and opts.risk)
+        -- Tombol merah teks putih; hover = dibalik putih/hitam + miring, klik = sentak.
         local pill = new("TextButton", {
             Name = "Action",
             Size = UDim2.fromOffset(88, 30),
-            BackgroundColor3 = Color3.new(1, 1, 1),
+            BackgroundColor3 = Theme.Accent,
             BorderSizePixel = 0,
-            Font = Enum.Font.GothamBold,
+            Font = Enum.Font.GothamBlack,
             TextSize = 12,
-            TextColor3 = Color3.new(1, 1, 1),
-            Text = (opts and opts.action) or "Run",
+            TextColor3 = Theme.Paper,
+            Text = string.upper((opts and opts.action) or "Run"),
             AutoButtonColor = false,
             LayoutOrder = 2,
             ZIndex = 4,
         }, right)
-        corner(pill, 8)
-        accentGradient(pill, 0)
+        local pillStroke = sharp(pill, Theme.Paper, 2, 0)
         connect(pill.MouseEnter, function()
-            tween(pill, { BackgroundTransparency = 0.15 })
+            tweenEx(pill, { BackgroundColor3 = Theme.Paper, TextColor3 = Theme.Ink, Rotation = -4 }, 0.14, Enum.EasingStyle.Back)
+            pillStroke.Color = Theme.Accent
         end)
         connect(pill.MouseLeave, function()
-            tween(pill, { BackgroundTransparency = 0 })
+            tweenEx(pill, { BackgroundColor3 = Theme.Accent, TextColor3 = Theme.Paper, Rotation = 0 }, 0.12)
+            pillStroke.Color = Theme.Paper
         end)
         local function fire()
+            pill.Rotation = 3
+            tweenEx(pill, { Rotation = pill.BackgroundColor3 == Theme.Paper and -4 or 0 }, 0.18, Enum.EasingStyle.Back)
             task.spawn(safe, callback)
         end
         connect(pill.MouseButton1Click, fire)
@@ -948,15 +1274,16 @@ return function(env)
             Name = "Value",
             Size = UDim2.fromOffset(56, 24),
             BackgroundTransparency = 0,
-            BackgroundColor3 = Theme.Chip,
-            Font = Enum.Font.GothamBold,
-            TextSize = 12,
-            TextColor3 = Theme.Accent,
+            BackgroundColor3 = Theme.Paper,
+            Font = Enum.Font.GothamBlack,
+            TextSize = 13,
+            TextColor3 = Theme.Ink,
             TextXAlignment = Enum.TextXAlignment.Center,
             Text = tostring(default),
+            Rotation = -3,
             ZIndex = 4,
         }, right)
-        corner(valueChip, 6)
+        sharp(valueChip, Theme.Accent, 2, 0)
         local barHolder = new("Frame", {
             Name = "BarHolder",
             Size = UDim2.new(1, 0, 0, 22),
@@ -970,23 +1297,21 @@ return function(env)
             BackgroundColor3 = Theme.Off,
             BorderSizePixel = 0,
         }, barHolder)
-        corner(bar, 3)
         local fill = new("Frame", {
             Size = UDim2.new((default - min) / (max - min), 0, 1, 0),
-            BackgroundColor3 = Color3.new(1, 1, 1),
+            BackgroundColor3 = Theme.Accent,
             BorderSizePixel = 0,
         }, bar)
-        corner(fill, 3)
-        accentGradient(fill, 0)
         local knob = new("Frame", {
             AnchorPoint = Vector2.new(0.5, 0.5),
             Position = UDim2.new((default - min) / (max - min), 0, 0.5, 0),
-            Size = UDim2.fromOffset(14, 14),
-            BackgroundColor3 = Color3.new(1, 1, 1),
+            Size = UDim2.fromOffset(12, 12),
+            Rotation = 45,
+            BackgroundColor3 = Theme.Paper,
             BorderSizePixel = 0,
             ZIndex = 3,
         }, bar)
-        corner(knob, 7)
+        sharp(knob, Theme.Ink, 2, 0)
         local hit = new("TextButton", {
             Name = "SliderHit",
             Size = UDim2.fromScale(1, 1),
@@ -1048,9 +1373,9 @@ return function(env)
         local valueBtn = new("TextButton", {
             Name = "Dropdown",
             Size = UDim2.fromOffset(186, 30),
-            BackgroundColor3 = Theme.Chip,
+            BackgroundColor3 = Theme.Ink,
             BorderSizePixel = 0,
-            Font = Enum.Font.GothamMedium,
+            Font = Enum.Font.GothamBold,
             TextSize = 12,
             TextColor3 = Theme.Text,
             TextTruncate = Enum.TextTruncate.AtEnd,
@@ -1058,32 +1383,44 @@ return function(env)
             AutoButtonColor = false,
             ZIndex = 4,
         }, right)
-        corner(valueBtn, 8)
-        stroke(valueBtn, Theme.Stroke, 1, 0)
-        pad(valueBtn, 0, 26, 0, 10)
+        local ddStroke = sharp(valueBtn, Theme.Stroke, 1, 0)
+        pad(valueBtn, 0, 28, 0, 10)
+        local arrowBox = slab(valueBtn, {
+            Name = "ArrowBox",
+            AnchorPoint = Vector2.new(0, 0.5),
+            Position = UDim2.new(1, 4, 0.5, 0),
+            Size = UDim2.fromOffset(20, 20),
+            Rotation = -6,
+            BackgroundColor3 = Theme.Accent,
+            ZIndex = 5,
+        })
         text({
             Name = "Arrow",
-            AnchorPoint = Vector2.new(0, 0.5),
-            Position = UDim2.new(1, 6, 0.5, 0),
-            Size = UDim2.fromOffset(16, 16),
-            TextSize = 12,
-            TextColor3 = Theme.Sub,
-            Text = "v",
+            Size = UDim2.fromScale(1, 1),
+            Font = Enum.Font.GothamBlack,
+            TextSize = 11,
+            TextColor3 = Theme.Paper,
+            Text = "V",
             TextXAlignment = Enum.TextXAlignment.Center,
-            ZIndex = 5,
-        }, valueBtn)
+            ZIndex = 6,
+        }, arrowBox)
+        connect(valueBtn.MouseEnter, function()
+            ddStroke.Color = Theme.Paper
+        end)
+        connect(valueBtn.MouseLeave, function()
+            ddStroke.Color = Theme.Stroke
+        end)
 
         local list = new("Frame", {
             Name = "DropdownList",
             Size = UDim2.new(1, 0, 0, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
-            BackgroundColor3 = Theme.Side,
+            BackgroundColor3 = Theme.Ink,
             BorderSizePixel = 0,
             Visible = false,
             LayoutOrder = UI.nextOrder(page),
         }, page)
-        corner(list, 10)
-        stroke(list, Theme.Stroke, 1, 0)
+        sharp(list, Theme.Accent, 2, 0)
         pad(list, 6, 6, 6, 6)
         new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, list)
 
@@ -1116,21 +1453,21 @@ return function(env)
                 local ob = new("TextButton", {
                     Name = "Option",
                     Size = UDim2.new(1, 0, 0, 30),
-                    BackgroundColor3 = Theme.Card,
+                    BackgroundColor3 = i % 2 == 0 and Theme.Bg or Theme.Card,
                     BorderSizePixel = 0,
-                    Font = Enum.Font.GothamMedium,
+                    Font = Enum.Font.GothamBold,
                     TextSize = 13,
                     TextColor3 = opt.color or Theme.Text,
                     Text = opt.label,
                     AutoButtonColor = false,
                     LayoutOrder = i,
                 }, list)
-                corner(ob, 7)
+                local rowBg = ob.BackgroundColor3
                 connect(ob.MouseEnter, function()
-                    tween(ob, { BackgroundColor3 = Theme.CardHover })
+                    tween(ob, { BackgroundColor3 = Theme.Accent }, 0.08)
                 end)
                 connect(ob.MouseLeave, function()
-                    tween(ob, { BackgroundColor3 = Theme.Card })
+                    tween(ob, { BackgroundColor3 = rowBg }, 0.1)
                 end)
                 connect(ob.MouseButton1Click, function()
                     close()
@@ -1202,7 +1539,8 @@ return function(env)
         Name = "Toasts",
         BackgroundTransparency = 1,
         Size = UDim2.new(0, 310, 1, -24),
-        Position = UDim2.new(1, -322, 0, 12),
+        Position = UDim2.new(1, -326, 0, 12),
+        ZIndex = 10,
     }, screen)
     new("UIListLayout", {
         Padding = UDim.new(0, 8),
@@ -1218,41 +1556,66 @@ return function(env)
         end
         toastCount = toastCount + 1
         local accent = color or Theme.Accent
+        -- Kartu "calling card": badan hitam, garis putih, tag judul miring warna aksen,
+        -- serpihan merah di pojok kanan (CanvasGroup selalu nge-clip, jadi aman diputar).
         local toast = new("CanvasGroup", {
             Name = "Toast",
             Size = UDim2.new(1, 0, 0, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
-            BackgroundColor3 = Theme.Card,
+            BackgroundColor3 = Theme.Ink,
             BorderSizePixel = 0,
             GroupTransparency = 1,
             LayoutOrder = toastCount,
         }, toastHolder)
-        corner(toast, 10)
-        stroke(toast, Theme.Stroke, 1, 0)
+        sharp(toast, Theme.Paper, 2, 0)
         new("Frame", {
             Name = "Bar",
-            Size = UDim2.new(0, 4, 1, 0),
+            Size = UDim2.new(0, 6, 1, 0),
             BackgroundColor3 = accent,
             BorderSizePixel = 0,
         }, toast)
+        slab(toast, {
+            Name = "Shard",
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(1, -18, 0, 4),
+            Size = UDim2.fromOffset(90, 16),
+            Rotation = -28,
+            BackgroundColor3 = Theme.Accent,
+            BackgroundTransparency = 0.25,
+        })
+        slab(toast, {
+            Name = "Shard2",
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(1, -4, 0, 22),
+            Size = UDim2.fromOffset(70, 3),
+            Rotation = -28,
+            BackgroundColor3 = Theme.Paper,
+            BackgroundTransparency = 0.4,
+        })
         local body = new("Frame", {
             Name = "Body",
-            Position = UDim2.fromOffset(4, 0),
-            Size = UDim2.new(1, -4, 0, 0),
+            Position = UDim2.fromOffset(6, 0),
+            Size = UDim2.new(1, -6, 0, 0),
             AutomaticSize = Enum.AutomaticSize.Y,
             BackgroundTransparency = 1,
+            ZIndex = 2,
         }, toast)
-        pad(body, 10, 12, 10, 12)
-        new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }, body)
-        text({
+        pad(body, 9, 14, 11, 12)
+        new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, body)
+        local tag = text({
             Name = "Title",
-            Size = UDim2.new(1, 0, 0, 16),
-            Font = Enum.Font.GothamBold,
-            TextSize = 13,
-            TextColor3 = accent,
+            AutomaticSize = Enum.AutomaticSize.X,
+            Size = UDim2.new(0, 0, 0, 20),
+            BackgroundTransparency = 0,
+            BackgroundColor3 = accent,
+            Font = Enum.Font.GothamBlack,
+            TextSize = 12,
+            TextColor3 = Theme.Ink,
+            Rotation = -3,
             Text = tostring(title),
             LayoutOrder = 1,
         }, body)
+        pad(tag, 0, 8, 0, 8)
         text({
             Name = "Text",
             Size = UDim2.new(1, 0, 0, 0),
@@ -1263,7 +1626,10 @@ return function(env)
             Text = tostring(body_text or ""),
             LayoutOrder = 2,
         }, body)
-        tween(toast, { GroupTransparency = 0 }, 0.2)
+        -- Masuk: miring lalu menyentak lurus.
+        local tscale = new("UIScale", { Scale = 0.9 }, toast)
+        tween(toast, { GroupTransparency = 0 }, 0.16)
+        tweenEx(tscale, { Scale = 1 }, 0.22, Enum.EasingStyle.Back)
 
         local toasts = {}
         for _, c in ipairs(toastHolder:GetChildren()) do
@@ -1308,7 +1674,7 @@ return function(env)
         sidebar.Visible = not UI.minimized
         contentArea.Visible = not UI.minimized
         glow.Visible = not UI.minimized
-        tween(main, { Size = UI.minimized and UDim2.fromOffset(WIN_W, HEADER_H) or UDim2.fromOffset(WIN_W, WIN_H) }, 0.2)
+        tweenEx(main, { Size = UI.minimized and UDim2.fromOffset(WIN_W, HEADER_H + 2) or UDim2.fromOffset(WIN_W, WIN_H) }, 0.22, Enum.EasingStyle.Quint)
     end
     connect(UI.minButton.MouseButton1Click, function()
         UI.setMinimized(not UI.minimized)
@@ -1319,20 +1685,19 @@ return function(env)
     local halo = new("Frame", {
         Name = "CursorHalo",
         AnchorPoint = Vector2.new(0.5, 0.5),
-        Size = UDim2.fromOffset(20, 20),
+        Size = UDim2.fromOffset(18, 18),
+        Rotation = 45,
         BackgroundTransparency = 1,
         Visible = false,
     }, cursorGui)
-    corner(halo, 10)
-    stroke(halo, Theme.Accent, 2, 0.1)
-    local dot = new("Frame", {
+    sharp(halo, Theme.Accent, 2, 0)
+    new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.fromScale(0.5, 0.5),
-        Size = UDim2.fromOffset(6, 6),
-        BackgroundColor3 = Color3.new(1, 1, 1),
+        Size = UDim2.fromOffset(5, 5),
+        BackgroundColor3 = Theme.Paper,
         BorderSizePixel = 0,
     }, halo)
-    corner(dot, 3)
     UI.halo = halo
 
     -- v2.2: JANGAN pernah sentuh MouseBehavior. Game membidik stab / tembak lewat posisi kursor

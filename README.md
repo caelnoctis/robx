@@ -24,6 +24,10 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 4. Kalau layar tetap gelap waktu EMP walaupun Fullbright nyala: **Start live log**, tunggu sampai ada EMP, lalu **Save**. Section **LIGHTING** dan baris `LIGHT` di live log menunjukkan apa saja yang diubah EMP (property Lighting, efek di Lighting / Camera, ScreenGui `EmpInk` / `EmpAfterimage`, lampu). Bagian ini cuma membaca, tidak menulis apa pun ke game.
 5. Kirim file `.txt` itu. Isinya struktur modul game, config role, attribute, animasi, remote, dan log kejadian selama ronde, jadi deteksi role dan fitur aksi bisa dicocokkan dengan nama-nama asli game.
 
+## Tampilan (v2.6)
+
+Menu pakai tema "Phantom": merah, hitam, putih, terinspirasi gaya menu Persona 5 Royal (fan-inspired, bukan aset resmi). Judul dibuat gaya surat kaleng (tiap huruf kotak miring sendiri), tab aktif berupa slab putih miring di atas slab merah, judul halaman di slab merah, tombol merah yang kebalik putih waktu di-hover, saklar yang jadi wajik waktu ON, dan toast ala calling card. Semua bentuk digambar dari Frame, UIStroke, dan UIGradient langsung di script, tanpa gambar dan tanpa logo, font, atau texture game. Teks deskripsi tetap lurus dan pakai font biasa biar enak dibaca lama.
+
 ## Fitur
 
 | Tab | Isi |

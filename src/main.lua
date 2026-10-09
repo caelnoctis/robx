@@ -32,7 +32,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.5.1",
+    Version = "2.6.0",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -1429,22 +1429,22 @@ local function pillButton(name, label, parent, order)
     local b = new("TextButton", {
         Name = name,
         Size = UDim2.fromOffset(52, 26),
-        BackgroundColor3 = Theme.Chip,
+        BackgroundColor3 = Theme.Ink,
         BorderSizePixel = 0,
-        Font = Enum.Font.GothamBold,
+        Font = Enum.Font.GothamBlack,
         TextSize = 11,
         TextColor3 = Theme.Text,
-        Text = label,
+        Text = string.upper(label),
         AutoButtonColor = false,
         LayoutOrder = order,
         ZIndex = 4,
     }, parent)
-    new("UICorner", { CornerRadius = UDim.new(0, 7) }, b)
+    new("UIStroke", { Color = Theme.Paper, Thickness = 1, Transparency = 0.55, LineJoinMode = Enum.LineJoinMode.Miter, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, b)
     connect(b.MouseEnter, function()
         UI.tween(b, { BackgroundColor3 = Theme.Accent })
     end)
     connect(b.MouseLeave, function()
-        UI.tween(b, { BackgroundColor3 = Theme.Chip })
+        UI.tween(b, { BackgroundColor3 = Theme.Ink })
     end)
     return b
 end
