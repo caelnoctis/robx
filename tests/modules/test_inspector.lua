@@ -816,7 +816,7 @@ check(okS == true and type(info) == "string" and string.match(info, "^NoctisENIX
 local path = info and string.match(info, "^(%S+)")
 check(folders.NoctisENIX == true, "makefolder called")
 check(path and files[path] ~= nil and files[path] == __clip, "file content == clipboard")
-check(I.version == "1.2.0", "inspector version 1.2.0: " .. tostring(I.version))
+check(I.version == "1.3.0", "inspector version 1.3.0: " .. tostring(I.version))
 check(path and has(files[path], "NoctisENIX Inspector v" .. I.version) and has(files[path], "executor: MockExec") and has(files[path], "==== LIVE LOG ===="), "saved text has header + live log")
 check(St.lastSave == info, "status keeps last save")
 check(St.savedMark == St.pushed + St.snapN, "save marks everything as saved")

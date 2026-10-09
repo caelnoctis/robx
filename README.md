@@ -29,7 +29,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 | Tab | Isi |
 | --- | --- |
 | ESP | Highlight warna tim (merah Evil, emas Veil, hijau Town, ungu Neutral, abu-abu = belum pasti), baris `EVIL TEAM` / **nama karakter in-game** / `[ROLE]` dengan **warna role asli game** (@username Roblox opsional), status DOWNED / DETAINED / SILENCED / IN LOCKER, jarak, HP. Teks langsung di atas kepala tanpa kotak gelap (kotaknya bisa dinyalakan lagi lewat "Text background"). Default cuma role yang **pasti**; tebakan bisa dinyalakan lewat "Show guesses too" |
-| Votes (di tab Visuals) | **Vote tags**: `VOTES → nama` di atas kepala pemilih dan `N VOTES` di atas orang yang di-vote. **Vote lasers**: garis tembus tembok dari tangan pemilih ke orang yang dia vote, merah kalau yang di-vote itu kamu. Jalan walaupun ESP mati |
+| Votes (di tab Visuals) | "Penglihatan Judge" untuk role apa pun. **Vote tags**: `VOTES → nama` atau `VOTES → SKIP` di atas kepala pemilih dan `N VOTES` di atas orang yang di-vote. **Vote lasers**: garis tembus tembok dari tangan pemilih ke orang yang dia vote, merah kalau yang di-vote itu kamu. Jalan walaupun ESP mati |
 | Roles | Role kamu, daftar **siapa vote siapa** + tally (hasil voting terakhir tetap tampil 2 menit), daftar role yang sudah ketahuan beserta alasannya, kill feed dan log bukti, notifikasi role, alert saat ada yang vote kamu, reset ronde |
 | Deception | Fake crawl, fake stab (`KnifeSwing`), fake gunshot (`Glock`), ghost, **Escape meeting seat**, **Stand on the table** (semuanya bisa diberi keybind) |
 | Teleport | Pilih target, ke target / ke yang downed / ke yang detained, Teleport-Stab-Return (Mafia), Bring target, Teleport-Heal-Return (Doctor) |
@@ -56,14 +56,16 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 
 ## Cara kerja Vote ESP (v2.4)
 
-Data vote diambil dari jaringan game, semuanya cuma dibaca:
+Di game ini cuma **Judge** yang bisa melihat siapa vote siapa ("No ballot is secret in your court"): game memasang tag `judgeBallotTag` ("VOTES TO SKIP" / "ACCUSES Nora") dan laser `judgeBallotLaser` khusus untuk Judge. NoctisENIX memberi tampilan yang sama ke role apa pun. Data vote diambil dari jaringan game, semuanya cuma dibaca (urut dari yang paling dipercaya):
 
-* `pointingService.updateArmPointing`: event dari server yang menggerakkan lengan / "laser" tiap pemain ke orang yang dia vote.
-* `gameService.talliedVotes`: getter tally yang juga dipakai client game untuk tanda vote di atas kepala. Di-poll tiap 2,5 detik selama voting.
-* `gameService.votePlayer`, kalau server menyiarkannya.
-* Attribute `talliedVotes` / `playerVotes` sebagai cadangan.
+1. Tag `judgeBallotTag` di layar kamu, kalau kamu sendiri Judge.
+2. `RoleNetworks.judge.observedBallots`: getter ballot milik Judge, ditanya tiap 2,5 detik **hanya selama voting**. Kalau server cuma mengisinya untuk Judge, hasilnya kosong dan sumber lain yang dipakai.
+3. `gameService.talliedVotes`: tally vote.
+4. `gameService.votePlayer`, kalau server menyiarkannya.
+5. `pointingService.updateArmPointing`: lengan setiap pemain yang menunjuk orang yang dia vote. Event ini dikirim ke semua client. Bentuk aslinya (dari capture Act II): `{ ["<UserId>"] = {...} }`, dan `"r"` berarti lengan diturunkan. Isi `{...}` dibaca toleran: pemain, karakter, part tubuh, UserId, nama karakter, posisi, arah, atau kata "skip".
+6. Attribute `talliedVotes` / `playerVotes` sebagai cadangan.
 
-Kalau beberapa sumber bertentangan, tally dari server yang dipakai. Isi payload `updateArmPointing` belum pernah terekam (yang terekam cuma jumlahnya), jadi parser-nya menerima beberapa bentuk: pemain, karakter, part tubuh, UserId, posisi, atau tabel. Kalau ada vote yang nggak muncul, jalankan Inspector dengan **Start live log** selama satu voting lalu kirim hasilnya. Baris `REMOTE_IN ... updateArmPointing (...)` di situ menunjukkan bentuk aslinya.
+Kalau ada vote yang nggak muncul, jalankan Inspector 1.3.0 dengan **Start live log** selama satu voting lalu kirim hasilnya. Versi ini menulis isi `updateArmPointing` sampai 4 tingkat dan ikut men-decompile modul Judge serta `pointingController`.
 
 ## Cara kerja deteksi role
 

@@ -33,7 +33,7 @@ local function handlers(inst, key)
 end
 
 local St = I._test.state()
-check(I.version == "1.2.0", "version 1.2.0: " .. tostring(I.version))
+check(I.version == "1.3.0", "version 1.3.0: " .. tostring(I.version))
 
 ----------------------------------------------------------------------
 -- Inspector harus murni baca: catat semua tulis property di luar GUI inspector sendiri,

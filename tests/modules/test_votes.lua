@@ -10,6 +10,11 @@ local gameSvc = __mk("Folder", { Name = "gameService" }, SN)
 local armRE = __mk("RemoteEvent", { Name = "updateArmPointing" }, pointSvc)
 local voteRE = __mk("RemoteEvent", { Name = "votePlayer" }, gameSvc)
 local tallyRF = __mk("RemoteFunction", { Name = "talliedVotes" }, gameSvc)
+local RN = __mk("Folder", { Name = "RoleNetworks" }, RS)
+local judgeF = __mk("Folder", { Name = "judge" }, RN)
+local ballotRF = __mk("RemoteFunction", { Name = "observedBallots" }, judgeF)
+local ballotValue = {}
+local ballotCalls = 0
 
 local me, alice, bob, cara, dan, eve
 for _, p in ipairs(__players) do
@@ -24,6 +29,10 @@ __Methods.InvokeServer = function(self, ...)
     if self == tallyRF then
         invoked = invoked + 1
         return tallyValue
+    end
+    if self == ballotRF then
+        ballotCalls = ballotCalls + 1
+        return ballotValue
     end
     return nil
 end
@@ -43,7 +52,7 @@ local Votes = VotesFactory(ctx)
 local clock = 1000
 Votes._clock = function() return clock end
 local found = Votes.start()
-check(found.armPointing == true and found.votePlayer == true and found.talliedVotes == true, "vote remotes found")
+check(found.armPointing == true and found.votePlayer == true and found.talliedVotes == true and found.judgeBallots == true, "vote remotes found")
 
 local function one(...)
     local l = Votes.parsePointing(...)
@@ -291,6 +300,95 @@ Votes.step()
 sig(armRE, "OnClientEvent"):Fire(alice, bob)
 sig(ctx.Players, "PlayerRemoving"):Fire(bob)
 check(Votes.targetOf(alice) == nil, "votes on a leaving player removed")
+
+-- 10. bentuk asli updateArmPointing: { ["<UserId>"] = {...} }, "r" = lengan turun (capture 2.3 Act II)
+Votes.clearAll()
+local SKIP = Votes.SKIP
+local function mapOne(tbl)
+    local l = Votes.parsePointing(tbl)
+    return l[1] and l[1][1], l[1] and l[1][2], #l
+end
+p1, t1 = mapOne({ ["5001"] = { target = bob.Character } })
+check(p1 == alice and t1 == bob, "map value with target character")
+p1, t1 = mapOne({ ["5001"] = { aim = bob.Character:FindFirstChild("HumanoidRootPart") } })
+check(t1 == bob, "unknown field holding a body part")
+p1, t1 = mapOne({ ["5001"] = { hit = Vector3.new(35, 1, 0) } })
+check(t1 == cara, "unknown field holding a world point")
+p1, t1 = mapOne({ ["5001"] = { data = { who = 5002 } } })
+check(t1 == bob, "nested UserId")
+p1, t1 = mapOne({ ["5001"] = { choice = "skip" } })
+check(t1 == SKIP, "skip word")
+p1, t1 = mapOne({ ["5001"] = { player = alice, target = alice } })
+check(p1 == alice and t1 == nil, "pointing at yourself is not a vote")
+p1, t1 = mapOne({ ["5001"] = "r" })
+check(p1 == alice and t1 == nil, "'r' = arm lowered")
+sig(armRE, "OnClientEvent"):Fire({ ["5001"] = { target = bob.Character }, ["5003"] = { target = bob.Character } })
+check(Votes.targetOf(alice) == bob and Votes.targetOf(cara) == bob and Votes.counts()[bob] == 2, "real payload with two pointers")
+sig(armRE, "OnClientEvent"):Fire({ ["5001"] = "r" })
+check(Votes.targetOf(alice) == nil and Votes.targetOf(cara) == bob, "'r' clears only that pointer")
+
+-- 11. ballot Judge (getter) waktu voting, termasuk skip
+Votes.clearAll()
+phase = "Voting"
+ballotValue = { ["5001"] = "skip", ["5004"] = 5002, ["5005"] = { target = "Mask" } }
+alice:SetAttribute("DisguiseName", "Mask")
+local bc = ballotCalls
+Votes.step()
+check(ballotCalls > bc, "observedBallots polled during voting")
+tgt, src = Votes.targetOf(alice)
+check(tgt == SKIP and src == "ballot", "ballot skip: " .. tostring(tgt and tgt.Name) .. "/" .. tostring(src))
+check(Votes.targetOf(dan) == bob, "ballot by UserId")
+check(Votes.targetOf(eve) == alice, "ballot by character name")
+check(Votes.counts()[SKIP] == 1, "skip counted")
+clock = clock + 3
+ballotValue = { ["5004"] = 5002 }
+Votes.step()
+check(Votes.targetOf(alice) == nil and Votes.targetOf(dan) == bob, "ballot removed when the server drops it")
+sig(armRE, "OnClientEvent"):Fire({ ["5004"] = { target = eve.Character } })
+check(Votes.targetOf(dan) == bob, "pointing does not override a fresh ballot")
+phase = "Night"
+clock = clock + 3
+Votes.step()
+clock = clock + 25
+bc = ballotCalls
+local tc = invoked
+Votes.step()
+check(invoked > tc, "tally still polled at night")
+check(ballotCalls == bc, "ballots not polled outside voting")
+
+-- 12. tag Judge di PlayerGui (kita Judge): paling akurat, termasuk SKIP
+Votes.clearAll()
+local pg = me:FindFirstChildOfClass("PlayerGui") or __mk("PlayerGui", { Name = "PlayerGui" }, me)
+local function judgeTag(voter, caption, target)
+    local g = __mk("BillboardGui", { Name = "judgeBallotTag", Enabled = true, Adornee = voter.Character:FindFirstChild("Head") }, pg)
+    local card = __mk("Frame", { Name = "Card" }, g)
+    __mk("TextLabel", { Name = "Caption", Text = caption }, card)
+    __mk("TextLabel", { Name = "Target", Text = target }, card)
+    return g
+end
+local tagSkip = judgeTag(dan, "VOTES TO", "SKIP")
+local tagAcc = judgeTag(eve, "ACCUSES", "Mask")
+local tagOff = judgeTag(cara, "ACCUSES", "Mask")
+tagOff.Adornee = nil
+Votes.step()
+tgt, src = Votes.targetOf(dan)
+check(tgt == SKIP and src == "judge", "judge tag skip: " .. tostring(src))
+tgt, src = Votes.targetOf(eve)
+check(tgt == alice and src == "judge", "judge tag accuses by character name")
+check(Votes.targetOf(cara) == nil, "tag without adornee ignored")
+sig(armRE, "OnClientEvent"):Fire({ ["5005"] = { target = bob.Character } })
+check(Votes.targetOf(eve) == alice, "judge tag beats pointing")
+tagAcc:Destroy()
+Votes.step()
+check(Votes.targetOf(eve) == nil and Votes.targetOf(dan) == SKIP, "judge entry cleared when its tag is gone")
+tagSkip:Destroy()
+tagOff:Destroy()
+Votes.step()
+check(Votes.targetOf(dan) == nil, "skip cleared with its tag")
+check(Votes.last ~= nil, "last voting kept after the tags vanish")
+local hasSkip = false
+for _, e in ipairs(Votes.last.list) do if e.target == SKIP then hasSkip = true end end
+check(hasSkip, "skip vote in the last voting")
 
 for _, w in ipairs(__warns) do fails[#fails + 1] = "WARN " .. w end
 if #fails == 0 then print("PASS votes") else for _, f in ipairs(fails) do print("FAIL " .. f) end end

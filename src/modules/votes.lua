@@ -6,17 +6,22 @@
 --   pointing : ServiceNetworks.pointingService.updateArmPointing (RemoteEvent dari server), lengan
 --              yang nunjuk = "laser" ke orang yang di-vote.
 --   attr     : Intel.votes() (attribute talliedVotes / playerVotes) sebagai cadangan.
+--   ballot   : RoleNetworks.judge.observedBallots (getter ballot milik Judge), di-poll waktu voting.
+--   judge    : billboard judgeBallotTag yang dipasang game di PlayerGui kalau kita Judge
+--              ("VOTES TO" / "ACCUSES" + nama karakter atau SKIP). Paling akurat.
 -- Bentuk payload belum pernah terekam isinya (cuma jumlahnya), jadi parser-nya toleran.
 -- Toast "X is voting for you" cuma dari modul ini (Intel diam kalau ctx.votesOwnAlerts).
 --
 -- Dipanggil sebagai: local Votes = (<isi file ini>)(ctx); Votes.start()
 return function(ctx)
     local V = { log = {}, last = nil, found = {} }
+    -- Target khusus: vote skip. Bukan Player, jadi nggak punya Character (nggak ada laser).
+    V.SKIP = { Name = "SKIP", DisplayName = "SKIP", skip = true }
     local Players, LocalPlayer = ctx.Players, ctx.LocalPlayer
     local Net, Game = ctx.Net, ctx.Game
 
     -- Sumber yang lebih kuat nggak ditimpa sumber yang lebih lemah selama masih segar.
-    local RANK = { attr = 1, pointing = 2, event = 3, tally = 4 }
+    local RANK = { attr = 1, pointing = 2, event = 3, tally = 4, ballot = 5, judge = 6 }
     local FRESH = 30
     -- tally & attr di-refresh sumbernya sendiri; pointing & event bisa diam tanpa "stop".
     local ENTRY_TTL = { pointing = 90, event = 90 }
@@ -35,7 +40,7 @@ return function(ctx)
     local inVote = false
     local alerted = {} -- [voter] = waktu toast terakhir
     local pollAt = -100
-    local deadSince = nil
+    local deadSince = {} -- [remote] = waktu getter itu pertama kali kelihatan mati
     local held = nil -- daftar vote terakhir yang nggak kosong; jadi V.last begitu daftar kosong / voting selesai
     local shrinkAt = nil -- waktu daftar mulai mengecil; held belum ditimpa sampai jelas ini bukan akhir voting
     local version, heldVersion = 0, -1
@@ -54,12 +59,43 @@ return function(ctx)
         end
     end
 
+    -- Nama karakter in-game (attribute DisguiseName), dipakai di tag Judge dan ballot.
+    function V.playerByCharName(name)
+        if type(name) ~= "string" or name == "" then
+            return nil
+        end
+        local l = string.lower(name)
+        for _, p in ipairs(Players:GetPlayers()) do
+            local ok, dn = pcall(function()
+                return p:GetAttribute("DisguiseName")
+            end)
+            if ok and type(dn) == "string" and string.lower(dn) == l then
+                return p
+            end
+        end
+        return nil
+    end
+
     local function playerFrom(v)
         if v == nil or type(v) == "boolean" then
             return nil
         end
         local ok, p = pcall(Net.playerFrom, v)
-        return ok and p or nil
+        if ok and p then
+            return p
+        end
+        if type(v) == "string" then
+            return V.playerByCharName(v)
+        end
+        return nil
+    end
+
+    local function isSkipWord(v)
+        if type(v) ~= "string" then
+            return false
+        end
+        local l = string.lower(v)
+        return l == "skip" or l == "skipped" or l == "skipvote" or l == "abstain"
     end
 
     local function bodyPos(p)
@@ -126,6 +162,9 @@ return function(ctx)
     end
 
     local function nameOf(p)
+        if p == V.SKIP then
+            return "SKIP"
+        end
         if ctx.nameOf then
             local ok, n = pcall(ctx.nameOf, p)
             if ok and n then
@@ -243,30 +282,77 @@ return function(ctx)
     end
 
     -- Map { [pemain] = target } di dalam satu argumen.
+    -- Bongkar nilai sembarang (isi updateArmPointing / ballot): kumpulkan pemain, titik, dan kata "skip".
+    -- Field target yang umum dibaca dulu, sisanya menyusul; dalam maksimal 3 tingkat.
+    local function scanValue(v, depth, acc)
+        if v == nil or acc.n > 64 then
+            return
+        end
+        acc.n = acc.n + 1
+        local t = typeof(v)
+        if t == "Vector3" or t == "CFrame" then
+            acc.points[#acc.points + 1] = pointOf(v)
+        elseif t == "string" then
+            if isSkipWord(v) then
+                acc.skip = true
+            else
+                local p = playerFrom(v)
+                if p then
+                    acc.players[#acc.players + 1] = p
+                end
+            end
+        elseif t == "Instance" or t == "number" then
+            local p = playerFrom(v)
+            if p then
+                acc.players[#acc.players + 1] = p
+            end
+        elseif t == "table" and depth > 0 then
+            local seen = {}
+            for _, key in ipairs(TARGET_KEYS) do
+                local x = rawget(v, key)
+                if x ~= nil then
+                    seen[key] = true
+                    scanValue(x, depth - 1, acc)
+                end
+            end
+            if rawget(v, "skip") == true or rawget(v, "skipped") == true or rawget(v, "isSkip") == true then
+                acc.skip = true
+            end
+            for k, x in pairs(v) do
+                if not seen[k] then
+                    scanValue(x, depth - 1, acc)
+                end
+            end
+        end
+    end
+
+    -- Target dari nilai milik seorang pemilih: pemain lain > skip > titik/arah lengan.
+    local function targetFromValue(kp, v)
+        local acc = { players = {}, points = {}, skip = false, n = 0 }
+        scanValue(v, 3, acc)
+        for _, p in ipairs(acc.players) do
+            if p ~= kp then
+                return p
+            end
+        end
+        if acc.skip then
+            return V.SKIP
+        end
+        if #acc.points > 0 then
+            return targetFromPoints(kp, acc.points)
+        end
+        return nil
+    end
+
+    -- Map { [pemain / UserId] = nilai } di dalam satu argumen (bentuk asli updateArmPointing:
+    -- { ["<UserId>"] = {...} }, dan "r" = lengan diturunkan).
     local function mapPairs(tbl, out)
         local n = 0
         for k, v in pairs(tbl) do
             if type(k) ~= "number" or k > 1000 then
                 local kp = playerFrom(k)
                 if kp then
-                    local tp = playerFrom(v)
-                    if not tp and typeof(v) == "table" then
-                        for _, key in ipairs(TARGET_KEYS) do
-                            tp = tp or playerFrom(rawget(v, key))
-                        end
-                    end
-                    if not tp then
-                        local pts = {}
-                        local pt = pointOf(v)
-                        if not pt and typeof(v) == "table" then
-                            pt = pointOf(rawget(v, "position")) or pointOf(rawget(v, "Position"))
-                        end
-                        if pt then
-                            pts[1] = pt
-                            tp = targetFromPoints(kp, pts)
-                        end
-                    end
-                    out[#out + 1] = { kp, tp }
+                    out[#out + 1] = { kp, targetFromValue(kp, v) }
                     n = n + 1
                 end
             end
@@ -445,24 +531,109 @@ return function(ctx)
         end
     end
 
-    local function pollTally()
-        local remote = Net.service("gameService", "talliedVotes")
+    -- Ballot Judge: { [voter] = target | "skip" | {...} } atau { { voter = .., target = .. }, ... }.
+    function V.parseBallots(value)
+        local votes = {}
+        if typeof(value) ~= "table" then
+            return votes
+        end
+        for k, v in pairs(value) do
+            local voter = nil
+            if type(k) ~= "number" or k > 1000 then
+                voter = playerFrom(k)
+            end
+            if voter then
+                local tgt = targetFromValue(voter, v)
+                if tgt then
+                    votes[voter] = tgt
+                end
+            elseif typeof(v) == "table" then
+                local vt
+                for _, key in ipairs(VOTER_KEYS) do
+                    vt = vt or playerFrom(rawget(v, key))
+                end
+                if vt then
+                    local tgt = targetFromValue(vt, v)
+                    if tgt then
+                        votes[vt] = tgt
+                    end
+                end
+            end
+        end
+        return votes
+    end
+
+    local function applyExact(votes, src)
+        for voter, e in pairs(entries) do
+            if e.src == src and votes[voter] == nil then
+                clearEntry(voter, src)
+            end
+        end
+        for voter, target in pairs(votes) do
+            setEntry(voter, target, src)
+        end
+        if next(votes) ~= nil then
+            lastActivity = now()
+        end
+    end
+
+    function V.applyBallots(value)
+        applyExact(V.parseBallots(value), "ballot")
+    end
+
+    -- Billboard judgeBallotTag yang dipasang game kalau kita Judge: Adornee = pemilih,
+    -- Card.Caption = "VOTES TO" / "ACCUSES", Card.Target = nama karakter atau "SKIP".
+    function V.scanJudgeTags()
+        local found = {}
+        local pg = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if not pg then
+            return found
+        end
+        for _, g in ipairs(pg:GetChildren()) do
+            if g.Name == "judgeBallotTag" and g:IsA("BillboardGui") and g.Enabled ~= false then
+                local voter = g.Adornee and playerFrom(g.Adornee) or nil
+                local card = g:FindFirstChild("Card")
+                local label = card and card:FindFirstChild("Target")
+                local text = label and label.Text
+                if voter and type(text) == "string" and text ~= "" then
+                    local tgt = isSkipWord(text) and V.SKIP or playerFrom(text)
+                    if tgt and tgt ~= voter then
+                        found[voter] = tgt
+                    end
+                end
+            end
+        end
+        return found
+    end
+
+    -- Getter dengan timeout; yang ditandai mati oleh satu balasan lambat dicoba lagi setelah jeda.
+    local function invokeGetter(remote, label)
         if not remote then
-            return
+            return false
         end
         if Net.dead and Net.dead[remote] then
-            -- Satu balasan lambat menandai getter ini mati; coba lagi setelah jeda, bukan selamanya.
-            deadSince = deadSince or now()
-            if now() - deadSince < DEAD_RETRY then
-                return
+            deadSince[remote] = deadSince[remote] or now()
+            if now() - deadSince[remote] < DEAD_RETRY then
+                return false
             end
             Net.dead[remote] = nil
-            deadSince = nil
-            note("retrying talliedVotes")
+            deadSince[remote] = nil
+            note("retrying " .. label)
         end
-        local ok, res = Net.invoke(remote, TALLY_TIMEOUT)
+        return Net.invoke(remote, TALLY_TIMEOUT)
+    end
+
+    local function pollTally()
+        local ok, res = invokeGetter(Net.service("gameService", "talliedVotes"), "talliedVotes")
         if ok then
             V.applyTally(res[1])
+        end
+        -- Ballot Judge cuma ditanya waktu voting (getter role lain, jadi seperlunya saja).
+        if inVote then
+            local okB, resB = invokeGetter(Net.role("judge", "observedBallots"), "observedBallots")
+            if okB then
+                V.applyBallots(resB[1])
+            end
         end
     end
 
@@ -515,6 +686,11 @@ return function(ctx)
                 end
             end
         end
+        -- Tag ballot Judge di layar kita (kalau kita Judge): sumber paling akurat.
+        local okJ, tags = pcall(V.scanJudgeTags)
+        if okJ and type(tags) == "table" then
+            applyExact(tags, "judge")
+        end
         local present = {}
         for _, p in ipairs(Players:GetPlayers()) do
             present[p] = true
@@ -523,7 +699,7 @@ return function(ctx)
             local ttl = ENTRY_TTL[e.src]
             if (e.src == "attr" and not attrVoters[voter])
                 or (ttl and t - e.t > ttl)
-                or not present[voter] or (e.target and not present[e.target]) then
+                or not present[voter] or (e.target and e.target ~= V.SKIP and not present[e.target]) then
                 clearEntry(voter)
             end
         end
@@ -630,6 +806,7 @@ return function(ctx)
             V.found.votePlayer = listen(Net.service("gameService", "votePlayer"), V.onVoteEvent)
         end
         V.found.talliedVotes = Net.service("gameService", "talliedVotes") ~= nil
+        V.found.judgeBallots = Net.role("judge", "observedBallots") ~= nil
         if ctx.connect then
             ctx.connect(Players.PlayerRemoving, function(p)
                 clearEntry(p)

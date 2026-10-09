@@ -23,7 +23,7 @@
     Snapshot me-require ModuleScript game (identity 2); controller bisa punya efek samping.
 ]]
 
-local VERSION = "1.2.0"
+local VERSION = "1.3.0"
 
 local genv = _G
 if type(getgenv) == "function" then
@@ -503,12 +503,13 @@ local function show(v)
     return fmtv(v) or ser(v, 2)
 end
 
+-- Kedalaman 4: payload seperti updateArmPointing ({ ["<UserId>"] = { ... } }) kelihatan isinya.
 local function serArgs(args, maxLen)
-    maxLen = maxLen or 300
+    maxLen = maxLen or 700
     local parts = {}
     local n = (type(args) == "table" and (args.n or #args)) or 0
     for i = 1, n do
-        parts[#parts + 1] = ser(args[i], 2)
+        parts[#parts + 1] = ser(args[i], 4)
     end
     local s = table.concat(parts, ", ")
     if #s > maxLen then
@@ -3299,6 +3300,10 @@ local SECTIONS = {
             "client.controllers.roleController.roles.doctor",
             "client.controllers.roleController",
             "client.controllers.interactionController",
+            -- vote: cara Judge melihat ballot + cara lengan menunjuk dikirim
+            "client.controllers.roleController.roles.judge",
+            "client.controllers.roleController.judgeBallotSight",
+            "client.controllers.pointingController",
         }
         for _, path in ipairs(TARGETS) do
             local inst = resolve(path, X.desc)

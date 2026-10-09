@@ -159,6 +159,15 @@ do
     S.esp = true
     ESP.step()
     ao = ESP.objs[alice]
+    -- vote SKIP (dari ballot / tag Judge): tag "VOTES → SKIP", tanpa laser
+    Votes.applyBallots({ Alice = "skip" })
+    ESP.step()
+    check(ao and string.find(ao.tx.Text, "VOTES → SKIP", 1, true) ~= nil, "skip tag: " .. (ao and ao.tx.Text or "nil"))
+    check(ao and (ao.laser == nil or ao.laser.Visible == false), "no laser for a skip vote")
+    refreshUi()
+    check(anyLabel("→  <b>SKIP</b>") and anyLabel("<b>SKIP</b> 1"), "Roles tab lists the skip vote and tally")
+    Votes.clearAll()
+    ESP.step()
 end
 
 -- 3. klik semua toggle & action (lewati yang berbahaya)

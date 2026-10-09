@@ -32,7 +32,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.4.1",
+    Version = "2.5.0",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -484,6 +484,21 @@ end
 -- Laser vote: LineHandleAdornment dengan Adornee = Terrain (CFrame-nya identitas, jadi CFrame garis
 -- = koordinat dunia). AlwaysOnTop supaya kelihatan tembus tembok seperti ESP lainnya.
 local VOTE_COLOR = Color3.fromRGB(255, 159, 67)
+local VOTE_SKIP_COLOR = Color3.fromRGB(185, 185, 200)
+
+-- Nama tujuan vote: SKIP, "you" untuk kita sendiri, selain itu nama karakter.
+local function voteName(target, you)
+    if target == nil then
+        return "?"
+    end
+    if target == Votes.SKIP then
+        return "SKIP"
+    end
+    if target == LocalPlayer then
+        return you
+    end
+    return charName(target)
+end
 local VOTE_ME_COLOR = Color3.fromRGB(255, 70, 80)
 
 local function handPos(char)
@@ -614,8 +629,8 @@ function ESP.step()
                     lines[#lines + 1] = string.format('<font color="%s">[%s%s]</font>', hex(roleTint(info.role, color)), esc(string.upper(info.role)), mark)
                 end
                 if voteTarget and S.voteEsp then
-                    local who = voteTarget == LocalPlayer and "YOU" or esc(charName(voteTarget))
-                    lines[#lines + 1] = string.format('<font color="%s">VOTES → %s</font>', hex(voteTarget == LocalPlayer and VOTE_ME_COLOR or VOTE_COLOR), who)
+                    local tagColor = (voteTarget == LocalPlayer and VOTE_ME_COLOR) or (voteTarget == Votes.SKIP and VOTE_SKIP_COLOR) or VOTE_COLOR
+                    lines[#lines + 1] = string.format('<font color="%s">VOTES → %s</font>', hex(tagColor), esc(voteName(voteTarget, "YOU")))
                 end
                 if voteCount and voteCount > 0 then
                     lines[#lines + 1] = string.format('<font color="%s">%d VOTE%s</font>', hex(VOTE_COLOR), voteCount, voteCount == 1 and "" or "S")
@@ -640,7 +655,7 @@ function ESP.step()
                 o.bb.Enabled = #lines > 0
                 o.tx.Text = table.concat(lines, "\n")
                 o.stroke.Color = S.esp and color or UNKNOWN_COLOR
-                if voteTarget and S.voteLasers then
+                if voteTarget and voteTarget ~= Votes.SKIP and S.voteLasers then
                     ESP.laserStep(o, char, voteTarget)
                 else
                     hideLaser(o)
@@ -1206,7 +1221,7 @@ UI.toggle(Pages.esp, "Text background", "Dark box behind the text. Off = plain o
     S.espPanel = v
 end)
 UI.section(Pages.esp, "Votes")
-UI.toggle(Pages.esp, "Vote tags", "Shows who each player is voting for (VOTES → name) and how many votes each player has, above their head. Works even with ESP off.", S.voteEsp, function(v)
+UI.toggle(Pages.esp, "Vote tags", "Judge vision for every role: shows who each player votes for (VOTES → name or SKIP) and how many votes each player has, above their head. Works even with ESP off.", S.voteEsp, function(v)
     S.voteEsp = v
 end, { risk = "local" })
 UI.toggle(Pages.esp, "Vote lasers", "Draws a line through walls from each voter's hand to the player they vote for. Red = they are voting you.", S.voteLasers, function(v)
@@ -1638,7 +1653,7 @@ local function refreshUi()
             local parts = {}
             for i = 1, math.min(#tally, 6) do
                 local e = tally[i]
-                parts[#parts + 1] = "<b>" .. esc(e.target == LocalPlayer and "You" or charName(e.target)) .. "</b> " .. e.n
+                parts[#parts + 1] = "<b>" .. esc(voteName(e.target, "You")) .. "</b> " .. e.n
             end
             if #parts > 0 then
                 voteItems[#voteItems + 1] = { text = "Tally: " .. table.concat(parts, "   "), color = VOTE_COLOR }
@@ -1650,8 +1665,8 @@ local function refreshUi()
             end
             local me = e.target == LocalPlayer
             voteItems[#voteItems + 1] = {
-                text = "<b>" .. esc(e.voter == LocalPlayer and "You" or charName(e.voter)) .. "</b>  →  <b>"
-                    .. esc(me and "You" or (e.target and charName(e.target) or "?")) .. '</b>  <font color="#8F89AA">(' .. esc(e.src) .. ")</font>",
+                text = "<b>" .. esc(voteName(e.voter, "You")) .. "</b>  →  <b>"
+                    .. esc(voteName(e.target, "You")) .. '</b>  <font color="#8F89AA">(' .. esc(e.src) .. ")</font>",
                 color = me and VOTE_ME_COLOR or nil,
             }
         end
