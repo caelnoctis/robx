@@ -33,7 +33,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.5.0",
+    Version = "2.5.1",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -6271,9 +6271,15 @@ return function(ctx)
         end
         local tb = Net.topbarText and string.lower(Net.topbarText) or nil
         if tb then
-            for _, w in ipairs({ "night", "day", "discussion", "voting", "vote", "meeting" }) do
-                if string.find(tb, w, 1, true) then
-                    return w
+            -- Teks topbar asli: "Discuss who you believe is guilty of murder. (55)",
+            -- "Cast your vote and conclude the trial. (30)", "The night will end in 9 seconds",
+            -- "Eliminate a player within 90 seconds" (malam, role pembunuh).
+            for _, w in ipairs({
+                { "night", "night" }, { "eliminate", "night" }, { "day", "day" }, { "discuss", "discussion" },
+                { "vote", "voting" }, { "meeting", "meeting" },
+            }) do
+                if string.find(tb, w[1], 1, true) then
+                    return w[2]
                 end
             end
         end
@@ -8849,7 +8855,9 @@ local Votes = (function()
 --              tanda vote di atas kepala), di-poll pelan.
 --   event    : ServiceNetworks.gameService.votePlayer, kalau server menyiarkannya ke client.
 --   pointing : ServiceNetworks.pointingService.updateArmPointing (RemoteEvent dari server), lengan
---              yang nunjuk = "laser" ke orang yang di-vote.
+--              yang nunjuk = "laser" ke orang yang di-vote. Cuma dihitung waktu fase voting:
+--              lengan juga naik-turun di malam & diskusi.
+--   skip     : counter "3/8" di PlayerGui.SkipIntro (CounterInk), jumlah SKIP buat semua role.
 --   attr     : Intel.votes() (attribute talliedVotes / playerVotes) sebagai cadangan.
 --   ballot   : RoleNetworks.judge.observedBallots (getter ballot milik Judge), di-poll waktu voting.
 --   judge    : billboard judgeBallotTag yang dipasang game di PlayerGui kalau kita Judge
@@ -9335,11 +9343,26 @@ return function(ctx)
     ------------------------------------------------------------------
     -- Handler jaringan
     ------------------------------------------------------------------
+    -- Lengan juga diangkat waktu malam & diskusi (capture Witch: burst updateArmPointing tiap
+    -- detik), jadi pointing cuma dihitung vote kalau fasenya voting. Fase nggak diketahui = tetap
+    -- dihitung, biar nggak buta total kalau log fase nggak kebaca.
+    function V.pointingCounts()
+        local ok, ph = pcall(Game.phase)
+        if not ok or ph == nil then
+            local okN, night = pcall(Game.isNight)
+            return not (okN and night == true)
+        end
+        return V.isVotePhase()
+    end
+
     function V.onPointing(...)
+        local counts = V.pointingCounts()
         for _, pair in ipairs(V.parsePointing(...)) do
             local pointer, target = pair[1], pair[2]
             if target then
-                setEntry(pointer, target, "pointing")
+                if counts then
+                    setEntry(pointer, target, "pointing")
+                end
             else
                 clearEntry(pointer, "pointing")
             end
@@ -9451,6 +9474,24 @@ return function(ctx)
         return found
     end
 
+    -- Counter skip di layar voting: PlayerGui.SkipIntro ... CounterInk.Label = "3/8"
+    -- (suara skip / yang dibutuhkan). Kelihatan buat semua role.
+    function V.readSkipCounter()
+        local pg = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        local root = pg and pg:FindFirstChild("SkipIntro")
+        local ink = root and root:FindFirstChild("CounterInk", true)
+        local label = ink and (ink:FindFirstChild("Label") or ink)
+        local text = label and label.Text
+        if type(text) ~= "string" then
+            return nil
+        end
+        local n, need = string.match(text, "(%d+)%s*/%s*(%d+)")
+        if not n then
+            return nil
+        end
+        return tonumber(n), tonumber(need)
+    end
+
     -- Getter dengan timeout; yang ditandai mati oleh satu balasan lambat dicoba lagi setelah jeda.
     local function invokeGetter(remote, label)
         if not remote then
@@ -9502,6 +9543,7 @@ return function(ctx)
     -- Data voting yang sedang jalan (dipanggil juga saat voting selesai).
     function V.reset()
         entries, tallyCounts, alerted = {}, {}, {}
+        V.skip = nil
         tallyAt, lastActivity = -100, -100
         held, shrinkAt = nil, nil
         version = version + 1
@@ -9536,6 +9578,25 @@ return function(ctx)
         if okJ and type(tags) == "table" then
             applyExact(tags, "judge")
         end
+        -- Counter skip (cuma waktu voting; label-nya bisa nyangkut sesudahnya).
+        if vp then
+            local okS, n, need = pcall(V.readSkipCounter)
+            local cur = V.skip
+            if okS and n then
+                if not cur or cur.n ~= n or cur.need ~= need then
+                    V.skip = { n = n, need = need, t = t }
+                    version = version + 1
+                end
+            end
+        end
+        -- Sisa pointing dari luar voting (mis. fase baru kebaca telat) dibuang.
+        if not V.pointingCounts() then
+            for voter, e in pairs(entries) do
+                if e.src == "pointing" then
+                    clearEntry(voter)
+                end
+            end
+        end
         local present = {}
         for _, p in ipairs(Players:GetPlayers()) do
             present[p] = true
@@ -9560,7 +9621,7 @@ return function(ctx)
         if version ~= heldVersion then
             heldVersion = version
             local live = V.list()
-            if #live == 0 then
+            if #live == 0 and not V.skip then
                 promoteHeld(t)
                 shrinkAt = nil
             elseif held and #live < #held.list then
@@ -9572,7 +9633,7 @@ return function(ctx)
         end
         if shrinkAt and t - shrinkAt >= SHRINK_GRACE then
             local live = V.list()
-            if #live > 0 then
+            if #live > 0 or V.skip then
                 held = { t = t, list = live, counts = V.counts() }
             end
             shrinkAt = nil
@@ -9622,6 +9683,9 @@ return function(ctx)
         end
         for target, n in pairs(tallyCounts) do
             out[target] = n
+        end
+        if V.skip and V.skip.n > (out[V.SKIP] or 0) then
+            out[V.SKIP] = V.skip.n
         end
         return out
     end
@@ -10924,7 +10988,7 @@ local function refreshUi()
     local okV, vlist = pcall(Votes.list)
     local okVC, vcounts = pcall(Votes.counts)
     local shownLast = false
-    if okV and type(vlist) == "table" and #vlist == 0 and Votes.last and os.clock() - Votes.last.t < 120 then
+    if okV and type(vlist) == "table" and #vlist == 0 and not Votes.skip and Votes.last and os.clock() - Votes.last.t < 120 then
         vlist, vcounts, shownLast = Votes.last.list, Votes.last.counts, true
         okVC = true
     end
@@ -10945,7 +11009,11 @@ local function refreshUi()
             local parts = {}
             for i = 1, math.min(#tally, 6) do
                 local e = tally[i]
-                parts[#parts + 1] = "<b>" .. esc(voteName(e.target, "You")) .. "</b> " .. e.n
+                local n = tostring(e.n)
+                if e.target == Votes.SKIP and Votes.skip and Votes.skip.need and not shownLast then
+                    n = n .. "/" .. Votes.skip.need
+                end
+                parts[#parts + 1] = "<b>" .. esc(voteName(e.target, "You")) .. "</b> " .. n
             end
             if #parts > 0 then
                 voteItems[#voteItems + 1] = { text = "Tally: " .. table.concat(parts, "   "), color = VOTE_COLOR }

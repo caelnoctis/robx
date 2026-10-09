@@ -89,6 +89,13 @@ local _, _, n0 = one(nil)
 check(n0 == 0, "nothing parsed from nil")
 
 -- 2. event jaringan -> entri vote
+-- lengan diangkat waktu malam / diskusi bukan vote (capture Witch)
+sig(armRE, "OnClientEvent"):Fire(alice, bob)
+check(Votes.targetOf(alice) == nil, "night arm pointing is not a vote")
+phase = "Discussion"
+sig(armRE, "OnClientEvent"):Fire({ ["5001"] = { target = bob.Character } })
+check(Votes.targetOf(alice) == nil, "discussion arm pointing is not a vote")
+phase = "Voting"
 sig(armRE, "OnClientEvent"):Fire(alice, bob)
 check(Votes.targetOf(alice) == bob, "pointing event -> alice votes bob")
 check(Votes.counts()[bob] == 1, "count from pairs")
@@ -197,6 +204,7 @@ check(p1 == alice and t1 == nil, "hand position alone is not an aim point: " .. 
 eveRoot.Position = evePos
 
 -- 6. cadangan attribute dari Intel
+phase = "Night"
 intelVotes = { [bob] = { target = dan, count = 0 } }
 Votes.step()
 tgt, src = Votes.targetOf(bob)
@@ -322,10 +330,44 @@ p1, t1 = mapOne({ ["5001"] = { player = alice, target = alice } })
 check(p1 == alice and t1 == nil, "pointing at yourself is not a vote")
 p1, t1 = mapOne({ ["5001"] = "r" })
 check(p1 == alice and t1 == nil, "'r' = arm lowered")
+phase = "Voting"
 sig(armRE, "OnClientEvent"):Fire({ ["5001"] = { target = bob.Character }, ["5003"] = { target = bob.Character } })
 check(Votes.targetOf(alice) == bob and Votes.targetOf(cara) == bob and Votes.counts()[bob] == 2, "real payload with two pointers")
 sig(armRE, "OnClientEvent"):Fire({ ["5001"] = "r" })
 check(Votes.targetOf(alice) == nil and Votes.targetOf(cara) == bob, "'r' clears only that pointer")
+
+-- 10b. fase berubah jadi bukan voting: sisa pointing dibuang, pointing baru diabaikan
+phase = "Discussion"
+Votes.step()
+check(Votes.targetOf(cara) == nil, "pointing leftovers dropped outside voting")
+-- fase nggak kebaca sama sekali: pointing tetap dihitung (cadangan)
+phase = nil
+sig(armRE, "OnClientEvent"):Fire({ ["5003"] = { target = bob.Character } })
+check(Votes.targetOf(cara) == bob, "unknown phase still counts pointing")
+phase = "Night"
+Votes.step()
+
+-- 10c. counter skip di PlayerGui.SkipIntro (semua role)
+Votes.clearAll()
+local pgS = me:FindFirstChildOfClass("PlayerGui") or __mk("PlayerGui", { Name = "PlayerGui" }, me)
+local skipGui = __mk("ScreenGui", { Name = "SkipIntro" }, pgS)
+local sInner = __mk("Frame", { Name = "SkipIntro" }, skipGui)
+local ink = __mk("Frame", { Name = "CounterInk" }, __mk("Frame", { Name = "Content" }, sInner))
+local inkLabel = __mk("TextLabel", { Name = "Label", Text = "3/8" }, ink)
+local sn, sneed = Votes.readSkipCounter()
+check(sn == 3 and sneed == 8, "skip counter parsed: " .. tostring(sn) .. "/" .. tostring(sneed))
+Votes.step()
+check(Votes.skip == nil and Votes.counts()[SKIP] == nil, "skip counter ignored outside voting")
+phase = "Voting"
+Votes.step()
+check(Votes.skip and Votes.skip.need == 8 and Votes.counts()[SKIP] == 3, "skip counter in counts during voting")
+inkLabel.Text = "6 / 8"
+Votes.step()
+check(Votes.counts()[SKIP] == 6, "skip counter updates")
+phase = "Night"
+Votes.step()
+check(Votes.skip == nil and Votes.last and Votes.last.counts[SKIP] == 6, "skip count kept in last voting")
+skipGui:Destroy()
 
 -- 11. ballot Judge (getter) waktu voting, termasuk skip
 Votes.clearAll()

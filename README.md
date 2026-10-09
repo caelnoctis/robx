@@ -62,8 +62,10 @@ Di game ini cuma **Judge** yang bisa melihat siapa vote siapa ("No ballot is sec
 2. `RoleNetworks.judge.observedBallots`: getter ballot milik Judge, ditanya tiap 2,5 detik **hanya selama voting**. Kalau server cuma mengisinya untuk Judge, hasilnya kosong dan sumber lain yang dipakai.
 3. `gameService.talliedVotes`: tally vote.
 4. `gameService.votePlayer`, kalau server menyiarkannya.
-5. `pointingService.updateArmPointing`: lengan setiap pemain yang menunjuk orang yang dia vote. Event ini dikirim ke semua client. Bentuk aslinya (dari capture Act II): `{ ["<UserId>"] = {...} }`, dan `"r"` berarti lengan diturunkan. Isi `{...}` dibaca toleran: pemain, karakter, part tubuh, UserId, nama karakter, posisi, arah, atau kata "skip".
+5. `pointingService.updateArmPointing`: lengan setiap pemain yang menunjuk orang yang dia vote. Event ini dikirim ke semua client. Bentuk aslinya (dari capture Act II): `{ ["<UserId>"] = {...} }`, dan `"r"` berarti lengan diturunkan. Isi `{...}` dibaca toleran: pemain, karakter, part tubuh, UserId, nama karakter, posisi, arah, atau kata "skip". Lengan juga naik-turun waktu malam dan diskusi (capture Witch), jadi pointing **cuma dihitung selama fase Voting**; di luar itu diabaikan.
 6. Attribute `talliedVotes` / `playerVotes` sebagai cadangan.
+
+Jumlah SKIP juga dibaca dari counter `3/8` di layar voting (`PlayerGui.SkipIntro ... CounterInk.Label`), yang kelihatan buat semua role. Di tab Roles muncul sebagai `SKIP 3/8`.
 
 Kalau ada vote yang nggak muncul, jalankan Inspector 1.3.0 dengan **Start live log** selama satu voting lalu kirim hasilnya. Versi ini menulis isi `updateArmPointing` sampai 4 tingkat dan ikut men-decompile modul Judge serta `pointingController`.
 

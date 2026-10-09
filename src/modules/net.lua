@@ -566,9 +566,15 @@ return function(ctx)
         end
         local tb = Net.topbarText and string.lower(Net.topbarText) or nil
         if tb then
-            for _, w in ipairs({ "night", "day", "discussion", "voting", "vote", "meeting" }) do
-                if string.find(tb, w, 1, true) then
-                    return w
+            -- Teks topbar asli: "Discuss who you believe is guilty of murder. (55)",
+            -- "Cast your vote and conclude the trial. (30)", "The night will end in 9 seconds",
+            -- "Eliminate a player within 90 seconds" (malam, role pembunuh).
+            for _, w in ipairs({
+                { "night", "night" }, { "eliminate", "night" }, { "day", "day" }, { "discuss", "discussion" },
+                { "vote", "voting" }, { "meeting", "meeting" },
+            }) do
+                if string.find(tb, w[1], 1, true) then
+                    return w[2]
                 end
             end
         end

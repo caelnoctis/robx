@@ -32,7 +32,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.5.0",
+    Version = "2.5.1",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -1632,7 +1632,7 @@ local function refreshUi()
     local okV, vlist = pcall(Votes.list)
     local okVC, vcounts = pcall(Votes.counts)
     local shownLast = false
-    if okV and type(vlist) == "table" and #vlist == 0 and Votes.last and os.clock() - Votes.last.t < 120 then
+    if okV and type(vlist) == "table" and #vlist == 0 and not Votes.skip and Votes.last and os.clock() - Votes.last.t < 120 then
         vlist, vcounts, shownLast = Votes.last.list, Votes.last.counts, true
         okVC = true
     end
@@ -1653,7 +1653,11 @@ local function refreshUi()
             local parts = {}
             for i = 1, math.min(#tally, 6) do
                 local e = tally[i]
-                parts[#parts + 1] = "<b>" .. esc(voteName(e.target, "You")) .. "</b> " .. e.n
+                local n = tostring(e.n)
+                if e.target == Votes.SKIP and Votes.skip and Votes.skip.need and not shownLast then
+                    n = n .. "/" .. Votes.skip.need
+                end
+                parts[#parts + 1] = "<b>" .. esc(voteName(e.target, "You")) .. "</b> " .. n
             end
             if #parts > 0 then
                 voteItems[#voteItems + 1] = { text = "Tally: " .. table.concat(parts, "   "), color = VOTE_COLOR }
