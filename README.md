@@ -1,117 +1,117 @@
 # NoctisENIX
 
-Script Roblox untuk **MAFIA [V2.3] - ACT II** (Topline Studios Inc), ditargetkan untuk executor **Xeno**. Tanpa library eksternal, tanpa Drawing API, tanpa request keluar. Semua fungsi khusus executor dicek dulu dan dibungkus `pcall`; fitur yang butuh fungsi yang tidak ada di Xeno akan mati sendiri tanpa merusak fitur lain.
+A Roblox script for **MAFIA [V2.3] - ACT II** (Topline Studios Inc), built for the **Xeno** executor. It uses no external libraries, no Drawing API and no outbound requests. Every executor-specific function is checked first and wrapped in `pcall`, so a feature that needs a function Xeno does not have simply turns itself off without breaking the others.
 
-## Cara pakai
+## How to use
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claude/roblox-mafia-noctissenix-1t79fn/NoctisENIX.lua"))()
 ```
 
-Menu: **RightShift** (bisa diganti di Settings). Eksekusi ulang otomatis meng-unload instance lama.
+Menu: **RightShift** (can be changed in Settings). Running the script again unloads the old instance automatically.
 
-**Keybind** tersimpan otomatis di `workspace/NoctisENIX/settings.json` (folder workspace milik Xeno) dan dimuat lagi setiap script dijalankan. Klik chip lalu tekan tombol untuk mengikat; klik kanan chip (atau Backspace saat chip bertuliskan PRESS) untuk menghapus; tombol **Clear all keybinds** di Settings menghapus semuanya kecuali menu key. Satu tombol keyboard cuma bisa dipakai satu fitur.
+**Keybinds** are saved automatically to `workspace/NoctisENIX/settings.json` (Xeno's workspace folder) and loaded again every time the script runs. Click a chip and press a key to bind it. Right-click a chip (or press Backspace while it says PRESS) to remove the bind. The **Clear all keybinds** button in Settings removes all of them except the menu key. Each keyboard key can only be used by one feature.
 
-## Inspector (buat kalibrasi)
+## Inspector (for calibration)
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claude/roblox-mafia-noctissenix-1t79fn/NoctisENIX_Inspector.lua"))()
 ```
 
-1. Jalankan **saat sudah di dalam match**, lalu tekan **Snapshot**. Section **GAME NETWORK** memanggil getter baca-saja milik game (role, teamMembers, gamePhase, dan sejenisnya) untuk melihat format balasannya. Remote aksi seperti `onStab` tidak pernah dipanggil Inspector. Section **DECOMPILE** membaca kode modul role client (tanpa menjalankannya) supaya argumen asli `onStab` / `onHeal` kelihatan.
-2. Tekan **Start live log**, lalu main satu ronde penuh: malam, ada yang ditusuk, ada yang di-heal, meeting, voting. Kalau bisa, sekali jadi Mafia dan sekali jadi role lain.
-3. Tekan **Save**. Hasilnya tersimpan di folder `workspace/NoctisENIX/` milik Xeno (dan ikut tersalin ke clipboard).
-4. Kalau layar tetap gelap waktu EMP walaupun Fullbright nyala: **Start live log**, tunggu sampai ada EMP, lalu **Save**. Section **LIGHTING** dan baris `LIGHT` di live log menunjukkan apa saja yang diubah EMP (property Lighting, efek di Lighting / Camera, ScreenGui `EmpInk` / `EmpAfterimage`, lampu). Bagian ini cuma membaca, tidak menulis apa pun ke game.
-5. Kirim file `.txt` itu. Isinya struktur modul game, config role, attribute, animasi, remote, dan log kejadian selama ronde, jadi deteksi role dan fitur aksi bisa dicocokkan dengan nama-nama asli game.
+1. Run it **while you are already in a match**, then press **Snapshot**. The **GAME NETWORK** section calls the game's read-only getters (role, teamMembers, gamePhase and similar) to show what their replies look like. Action remotes such as `onStab` are never called by the Inspector. The **DECOMPILE** section reads the code of the client role modules (without running it) so the real arguments of `onStab` / `onHeal` are visible.
+2. Press **Start live log**, then play one full round: night, someone gets stabbed, someone gets healed, meeting, voting. If you can, play once as Mafia and once as another role.
+3. Press **Save**. The result is saved to Xeno's `workspace/NoctisENIX/` folder (and copied to the clipboard).
+4. If the screen stays dark during an EMP even with Fullbright on: **Start live log**, wait for an EMP, then **Save**. The **LIGHTING** section and the `LIGHT` lines in the live log show everything the EMP changes (Lighting properties, effects in Lighting / Camera, the `EmpInk` / `EmpAfterimage` ScreenGuis, lights). This part only reads; it writes nothing to the game.
+5. Send that `.txt` file. It contains the game's module structure, role configs, attributes, animations, remotes and an event log for the round, so role detection and the action features can be matched to the game's real names.
 
-## Tampilan (v2.6)
+## Look (v2.6)
 
-Menu pakai tema "Phantom": merah, hitam, putih, terinspirasi gaya menu Persona 5 Royal (fan-inspired, bukan aset resmi). Judul dibuat gaya surat kaleng (tiap huruf kotak miring sendiri), tab aktif berupa slab putih miring di atas slab merah, judul halaman di slab merah, tombol merah yang kebalik putih waktu di-hover, saklar yang jadi wajik waktu ON, dan toast ala calling card. Semua bentuk digambar dari Frame, UIStroke, dan UIGradient langsung di script, tanpa gambar dan tanpa logo, font, atau texture game. Teks deskripsi tetap lurus dan pakai font biasa biar enak dibaca lama.
+The menu uses the "Phantom" theme: red, black and white, inspired by the Persona 5 Royal menu style (fan-inspired, not official assets). The title is a ransom-note collage (every letter in its own tilted box), the active tab is a tilted white slab on top of a red slab, page titles sit on a red slab, action buttons are red and flip to white on hover, toggles turn into a diamond when ON, and toasts look like calling cards. Every shape is drawn from Frames, UIStrokes and UIGradients right in the script, with no images and no game logos, fonts or textures. Description text stays upright and uses a plain font so it is easy to read for long sessions.
 
-## Fitur
+## Features
 
-| Tab | Isi |
+| Tab | Contents |
 | --- | --- |
-| ESP | Highlight warna tim (merah Evil, emas Veil, hijau Town, ungu Neutral, abu-abu = belum pasti), baris `EVIL TEAM` / **nama karakter in-game** / `[ROLE]` dengan **warna role asli game** (@username Roblox opsional), status DOWNED / DETAINED / SILENCED / IN LOCKER, jarak, HP. Teks langsung di atas kepala tanpa kotak gelap (kotaknya bisa dinyalakan lagi lewat "Text background"). Default cuma role yang **pasti**; tebakan bisa dinyalakan lewat "Show guesses too" |
-| Votes (di tab Visuals) | "Penglihatan Judge" untuk role apa pun. **Vote tags**: `VOTES → nama` atau `VOTES → SKIP` di atas kepala pemilih dan `N VOTES` di atas orang yang di-vote. **Vote lasers**: garis tembus tembok dari tangan pemilih ke orang yang dia vote, merah kalau yang di-vote itu kamu. Jalan walaupun ESP mati |
-| Roles | Role kamu, daftar **siapa vote siapa** + tally (hasil voting terakhir tetap tampil 2 menit), daftar role yang sudah ketahuan beserta alasannya, kill feed dan log bukti, notifikasi role, alert saat ada yang vote kamu, reset ronde |
-| Deception | Fake crawl, fake stab (`KnifeSwing`), fake gunshot (`Glock`), ghost, **Escape meeting seat**, **Stand on the table** (semuanya bisa diberi keybind) |
-| Teleport | Pilih target, ke target / ke yang downed / ke yang detained, Teleport-Stab-Return (Mafia), Bring target, Teleport-Heal-Return (Doctor) |
+| ESP | Team-colored highlight (red Evil, gold Veil, green Town, purple Neutral, grey = not certain yet), a line with `EVIL TEAM` / **in-game character name** / `[ROLE]` in the **game's own role color** (Roblox @username optional), DOWNED / DETAINED / SILENCED / IN LOCKER status, distance, HP. The text sits right above the head with no dark box (the box can be turned back on with "Text background"). By default only **certain** roles are shown; guesses can be turned on with "Show guesses too" |
+| Votes (in the Visuals tab) | "Judge vision" for any role. **Vote tags**: `VOTES → name` or `VOTES → SKIP` above the voter's head and `N VOTES` above the person being voted. **Vote lasers**: a line through walls from the voter's hand to the person they vote, red when that person is you. Works even with ESP off |
+| Roles | Your role, a list of **who votes whom** + tally (the last voting stays visible for 2 minutes), the list of roles found so far with the reason, kill feed and evidence log, role notifications, an alert when someone votes you, round reset |
+| Deception | Fake crawl, fake stab (`KnifeSwing`), fake gunshot (`Glock`), ghost, **Escape meeting seat**, **Stand on the table** (all of them can have a keybind) |
+| Teleport | Pick a target, to target / to the downed player / to the detained player, Teleport-Stab-Return (Mafia), Bring target, Teleport-Heal-Return (Doctor) |
 | Player | Walk speed, jump power, infinite jump, noclip, fly, FOV |
-| Players | Daftar pemain + role, tombol target, teleport, spectate |
+| Players | Player list + roles, target, teleport and spectate buttons |
 | World | Fullbright, no fog, instant interact, anti AFK |
-| Dev Tools | Scan remote, dump pemain, remote logger |
-| Settings | Menu key, keybind (simpan / hapus), **hotkey game kamu** (T / G / R / Q / E / F atau yang sudah kamu ganti), kursor, cek game, rejoin, unload |
+| Dev Tools | Remote scan, player dump, remote logger |
+| Settings | Menu key, keybinds (save / clear), **your game hotkeys** (T / G / R / Q / E / F or whatever you changed them to), cursor, game check, rejoin, unload |
 
-## Catatan penting (v2.1)
+## Important notes (v2.1)
 
-* **Tombol stab / tembak (T / F) tidak muncul?** Ada dua penyebab yang terlihat di log game:
-  1. Kamu sedang **Detained** (dipenjara Detainer). Selama itu game memang mematikan aksi Mafia.
-  2. Versi sebelumnya me-`require` modul controller game. Di Xeno, hal itu menjalankan ulang kode controller dan bisa merusak binding tombol. Sejak v2.1, NoctisENIX dan Inspector **tidak pernah** me-`require` modul client; yang di-require cuma config data (`shared.configurations`).
-* Tutup menu (RightShift) saat membidik tusukan atau tembakan. Selama menu terbuka, mouse dilepas supaya UI bisa diklik, sehingga game tidak bisa membidik.
-* Role call ketat: chat pemain di game ini lewat jalur pesan sistem, dan dulu sempat terbaca sebagai pengumuman. Sekarang chat pemain diabaikan, animasi serangan dikunci ke ID asli (`KnifeSwing`, `Glock`), dan yang tampil default cuma role yang pasti.
+* **Stab / shoot buttons (T / F) not showing up?** There are two causes visible in the game log:
+  1. You are **Detained** (jailed by the Detainer). The game disables Mafia actions for that time.
+  2. Older versions `require`d the game's controller modules. On Xeno that re-runs the controller code and can break the key bindings. Since v2.1, NoctisENIX and the Inspector **never** `require` client modules; the only thing required is config data (`shared.configurations`).
+* Close the menu (RightShift) while aiming a stab or a shot. While the menu is open the mouse is released so the UI can be clicked, which means the game cannot aim.
+* Strict role calls: player chat in this game goes through the system message path and used to be read as announcements. Player chat is now ignored, attack animations are locked to the real IDs (`KnifeSwing`, `Glock`), and only certain roles are shown by default.
 
-## Catatan v2.3 (kalibrasi dari capture lobby)
+## Notes v2.3 (calibrated from a lobby capture)
 
-* **Ability nggak keluar waktu tombolnya ditekan?** Tombol ability di game ini bisa diganti pemain, dan pilihannya tersimpan di attribute `Hotkeys` (contoh `{"ability2":"F","flashlight":"G"}`). Bawaannya Main ability **T**, Second ability **G**, Third ability **R**, perk **Q**, interact **E**, flashlight **F**. Settings > **Game hotkeys** sekarang menampilkan tombol yang benar-benar aktif di akun kamu (tanda `*` = sudah kamu ganti).
-* Kalau keybind NoctisENIX dipasang di tombol yang sama dengan ability game, muncul peringatan, karena sekali tekan dua-duanya jalan.
-* Game punya tombol **Free cursor** sendiri (bawaan **P**). Kalau kursor kekunci di luar menu, tombol itu yang melepasnya.
-* Warna role di ESP diambil dari `roleColorsConfig` game, jadi persis sama dengan warna di UI game.
+* **Ability not firing when you press its key?** Ability keys in this game can be changed by the player, and the choice is stored in the `Hotkeys` attribute (for example `{"ability2":"F","flashlight":"G"}`). The defaults are Main ability **T**, Second ability **G**, Third ability **R**, perk **Q**, interact **E**, flashlight **F**. Settings > **Game hotkeys** now shows the keys that are actually active on your account (`*` = you changed it).
+* If a NoctisENIX keybind is set to the same key as a game ability, you get a warning, because one press triggers both.
+* The game has its own **Free cursor** key (default **P**). If the cursor gets locked outside the menu, that key releases it.
+* Role colors in the ESP come from the game's `roleColorsConfig`, so they match the game's UI exactly.
 
-## Cara kerja Vote ESP (v2.4)
+## How Vote ESP works (v2.4)
 
-Di game ini cuma **Judge** yang bisa melihat siapa vote siapa ("No ballot is secret in your court"): game memasang tag `judgeBallotTag` ("VOTES TO SKIP" / "ACCUSES Nora") dan laser `judgeBallotLaser` khusus untuk Judge. NoctisENIX memberi tampilan yang sama ke role apa pun. Data vote diambil dari jaringan game, semuanya cuma dibaca (urut dari yang paling dipercaya):
+In this game only the **Judge** can see who votes whom ("No ballot is secret in your court"): the game attaches a `judgeBallotTag` ("VOTES TO SKIP" / "ACCUSES Nora") and a `judgeBallotLaser` for the Judge only. NoctisENIX gives the same view to any role. Vote data comes from the game's network and is only ever read (ordered from most to least trusted):
 
-1. Tag `judgeBallotTag` di layar kamu, kalau kamu sendiri Judge.
-2. `RoleNetworks.judge.observedBallots`: getter ballot milik Judge, ditanya tiap 2,5 detik **hanya selama voting**. Kalau server cuma mengisinya untuk Judge, hasilnya kosong dan sumber lain yang dipakai.
-3. `gameService.talliedVotes`: tally vote.
-4. `gameService.votePlayer`, kalau server menyiarkannya.
-5. `pointingService.updateArmPointing`: lengan setiap pemain yang menunjuk orang yang dia vote. Event ini dikirim ke semua client. Bentuk aslinya (dari capture Act II): `{ ["<UserId>"] = {...} }`, dan `"r"` berarti lengan diturunkan. Isi `{...}` dibaca toleran: pemain, karakter, part tubuh, UserId, nama karakter, posisi, arah, atau kata "skip". Lengan juga naik-turun waktu malam dan diskusi (capture Witch), jadi pointing **cuma dihitung selama fase Voting**; di luar itu diabaikan.
-6. Attribute `talliedVotes` / `playerVotes` sebagai cadangan.
+1. The `judgeBallotTag` tags on your screen, if you are the Judge yourself.
+2. `RoleNetworks.judge.observedBallots`: the Judge's ballot getter, asked every 2.5 seconds **only during voting**. If the server only fills it for the Judge, the result is empty and the other sources are used.
+3. `gameService.talliedVotes`: the vote tally.
+4. `gameService.votePlayer`, if the server broadcasts it.
+5. `pointingService.updateArmPointing`: the arm of every player pointing at the person they vote. This event is sent to every client. Its real shape (from an Act II capture) is `{ ["<UserId>"] = {...} }`, and `"r"` means the arm was lowered. The `{...}` contents are parsed loosely: player, character, body part, UserId, character name, position, direction, or the word "skip". Arms also go up and down during night and discussion (Witch capture), so pointing **only counts during the Voting phase** and is ignored outside it.
+6. The `talliedVotes` / `playerVotes` attributes as a fallback.
 
-Jumlah SKIP juga dibaca dari counter `3/8` di layar voting (`PlayerGui.SkipIntro ... CounterInk.Label`), yang kelihatan buat semua role. Di tab Roles muncul sebagai `SKIP 3/8`.
+The SKIP count is also read from the `3/8` counter on the voting screen (`PlayerGui.SkipIntro ... CounterInk.Label`), which every role can see. In the Roles tab it shows up as `SKIP 3/8`.
 
-Kalau ada vote yang nggak muncul, jalankan Inspector 1.3.0 dengan **Start live log** selama satu voting lalu kirim hasilnya. Versi ini menulis isi `updateArmPointing` sampai 4 tingkat dan ikut men-decompile modul Judge serta `pointingController`.
+If a vote does not show up, run Inspector 1.3.0 with **Start live log** during one voting and send the result. This version writes the contents of `updateArmPointing` up to 4 levels deep and also decompiles the Judge module and `pointingController`.
 
-## Cara kerja deteksi role
+## How role detection works
 
-Game ini **tidak menyimpan role pemain lain di client**. Dump attribute dari game asli mengonfirmasi hal itu: yang ada cuma `DisguiseName`, status seperti `Downed`, dan attribute `<Role>Boosters` (booster peluang dapat role, **bukan** role yang sedang dipegang, jadi sengaja diabaikan). Karena itu role dikumpulkan dari beberapa sumber, dengan tingkat keyakinan `confirmed`, `likely` (`?`), dan `suspect` (`??`):
+This game **does not keep other players' roles on the client**. An attribute dump from the real game confirms it: the only things there are `DisguiseName`, statuses such as `Downed`, and the `<Role>Boosters` attributes (boosters for the chance to get a role, **not** the role currently held, so they are deliberately ignored). Roles are therefore gathered from several sources, with the confidence levels `confirmed`, `likely` (`?`) and `suspect` (`??`):
 
-* **Jaringan game** (`ReplicatedStorage.ServiceNetworks` dan `RoleNetworks`):
-  * Role kamu sendiri dari `roleService.role`, plus `getRoleNetwork`.
-  * Rekan setim dari `teamService.teamMembers` dan `teamMembers` milik role kamu.
-  * Pengungkapan role dari `gameService.revealRoles`, cutscene kematian, `chatService.onSystemMessage`, dan `announcementService.show`.
-  * Fase dari `gameService.gamePhase` dan `setTopbarText`.
-* **Bukti aksi**: animasi tusuk atau tembak saat malam (Mafia), tembakan siang (Vigilante), korban kena silence (Witch), pintu dikunci atau banana (Saboteur), pintu dibuka atau bersih-bersih (Janitor), korban bangun dari downed atau sembuh dari racun (Doctor). Kalau ada beberapa kandidat, kandidat dipersempit dari kejadian ke kejadian.
-* **Pengumuman sistem**, termasuk alur tebakan Harbinger.
+* **Game network** (`ReplicatedStorage.ServiceNetworks` and `RoleNetworks`):
+  * Your own role from `roleService.role`, plus `getRoleNetwork`.
+  * Teammates from `teamService.teamMembers` and your role's own `teamMembers`.
+  * Role reveals from `gameService.revealRoles`, death cutscenes, `chatService.onSystemMessage` and `announcementService.show`.
+  * The phase from `gameService.gamePhase` and `setTopbarText`.
+* **Action evidence**: stab or shot animations at night (Mafia), shots during the day (Vigilante), a victim getting silenced (Witch), doors locked or bananas (Saboteur), doors opened or cleanups (Janitor), a victim getting up from downed or cured of poison (Doctor). When there are several candidates, they are narrowed down event by event.
+* **System announcements**, including the Harbinger guessing flow.
 
-Role dan tim (dibaca dari `teamsConfig` game saat di dalam match; cadangannya disalin dari capture Inspector):
+Roles and teams (read from the game's `teamsConfig` while in a match; the fallback is copied from an Inspector capture):
 
-| Tim | Role |
+| Team | Roles |
 | --- | --- |
 | Evil (Mafia) | Mafia, Witch |
 | Veil | Saboteur, Mirage, Poisoner, Harbinger |
 | Town | Civilian, Detective, Doctor, Vigilante, Janitor, Detainer, Judge, Suppressor |
 | Neutral | Jester, Bodyguard |
 
-Bodyguard itu netral, tapi sisinya ikut orang yang dia jaga. Kalau dia muncul di daftar `teamMembers` Mafia, ESP menampilkan `EVIL TEAM` + `[BODYGUARD]`. Phantom dan Snow Spirit adalah role musiman; selama `seasonalRolesConfig` mematikannya, keduanya tidak ikut dicocokkan.
+The Bodyguard is neutral, but sides with whoever they protect. If they show up in the Mafia's `teamMembers` list, the ESP shows `EVIL TEAM` + `[BODYGUARD]`. Phantom and Snow Spirit are seasonal roles; while `seasonalRolesConfig` has them off, they are not matched.
 
-Bentuk argumen remote (misalnya apa yang dikirim `revealRoles`, atau argumen `onStab`) belum terlihat langsung, jadi parser-nya dibuat toleran terhadap beberapa bentuk. Hasil Inspector (section **GAME NETWORK** dan live log) dipakai untuk mengunci format pastinya.
+The exact argument shapes of some remotes (for example what `revealRoles` sends, or the `onStab` arguments) have not been seen directly yet, so the parsers accept several shapes. Inspector results (the **GAME NETWORK** section and the live log) are used to lock down the exact format.
 
-## Struktur repo
+## Repo layout
 
 ```
 src/main.lua            UI, ESP, movement, wiring
-src/modules/*.lua       ui (library UI), game_api (akses internal game), net (jaringan game),
-                        intel (deteksi role), actions (deception + teleport)
+src/modules/*.lua       ui (UI library), game_api (game internals), net (game network),
+                        intel (role detection), actions (deception + teleport)
 src/inspector.lua       Inspector
-tools/build.py          rakit src/ jadi NoctisENIX.lua dan NoctisENIX_Inspector.lua
-tests/                  harness Luau (luau-web) dengan mock Roblox
+tools/build.py          builds src/ into NoctisENIX.lua and NoctisENIX_Inspector.lua
+tests/                  Luau harness (luau-web) with a Roblox mock
 ```
 
-Setelah mengubah `src/`: `python3 tools/build.py`, lalu jalankan tes di `tests/` (lihat `tests/README.md`).
+After changing `src/`: run `python3 tools/build.py`, then run the tests in `tests/` (see `tests/README.md`).
 
-## Catatan keamanan dan risiko
+## Safety and risk notes
 
-* NoctisENIX tidak melakukan request jaringan keluar. Inspector hanya menulis file lokal di folder workspace executor.
-* Fitur seperti ghost dan teleport bisa dideteksi server game. Menjalankan script di executor melanggar Terms of Use Roblox dan berisiko akun terkena ban. Pakai akun alt.
+* NoctisENIX makes no outbound network requests. The Inspector only writes local files to the executor's workspace folder.
+* Features such as ghost and teleport can be detected by the game server. Running scripts in an executor breaks the Roblox Terms of Use and can get your account banned. Use an alt account.
