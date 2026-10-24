@@ -389,6 +389,25 @@ check(UI.sidebar.Visible == false and UI.contentArea.Visible == false, "minimize
 click(UI.minButton)
 check(UI.sidebar.Visible == true and UI.contentArea.Visible == true, "restored")
 
+-- 8b. ESP labu permen (v2.4): Workspace.CandyPumpkins.CandyPumpkin
+local pumpFolder = __mk("Folder", { Name = "CandyPumpkins" }, workspace)
+local pump = __mk("Model", { Name = "CandyPumpkin" }, pumpFolder)
+__mk("MeshPart", { Name = "Pumpkin", Position = Vector3.new(30, 0, 0) }, pump)
+local pumpToggle = control("Candy pumpkins", "Toggle")
+check(pumpToggle ~= nil, "candy pumpkin toggle exists")
+Pumpkins.step(Vector3.new(0, 0, 0))
+check(next(Pumpkins.items) == nil, "no pumpkin ESP while the toggle is off")
+click(pumpToggle)
+Pumpkins.step(Vector3.new(0, 0, 0))
+local po = Pumpkins.items[pump]
+check(po ~= nil and po.hl.Parent == espFolder and po.hl.Adornee == pump, "pumpkin highlighted")
+check(po and po.tx.Text == "CANDY  30m", "pumpkin distance: " .. tostring(po and po.tx.Text))
+pump:Destroy()
+Pumpkins.step(Vector3.new(0, 0, 0))
+check(next(Pumpkins.items) == nil, "kicked pumpkin ESP removed")
+click(pumpToggle)
+pumpFolder:Destroy()
+
 -- 9. unload
 local ub = control("Unload NoctisENIX", "Action")
 check(ub ~= nil, "unload button")

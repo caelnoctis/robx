@@ -654,6 +654,17 @@ return function(ctx)
     end
     Net.listen = listen
 
+    -- effectsService.playEffect: efek yang server siarkan ke semua client ("gunShot" penembak korban,
+    -- "phantomVerdict" aksi Phantom korban). Argumen mentah diteruskan ke hook "effect".
+    local function onEffect(...)
+        local args = table.pack(...)
+        local kind = args[1]
+        if kind == "gunShot" or kind == "phantomVerdict" then
+            call("effect", kind, args[2], args[3], args[4], args.n)
+            note("effect " .. kind)
+        end
+    end
+
     function Net.start(h)
         hooks = h or {}
         if started then
@@ -668,6 +679,7 @@ return function(ctx)
         found.deathCutscene = listen(Net.service("gameService", "playDeathCutscene"), onDeath("death cutscene"))
         found.bodyFound = listen(Net.service("gameService", "playBodyFoundCutscene"), onDeath("body found"))
         found.topbar = listen(Net.service("gameService", "setTopbarText"), onTopbar)
+        found.playEffect = listen(Net.service("effectsService", "playEffect"), onEffect)
         found.gameFlow = listen(RS:FindFirstChild("GameFlowLogRemote"), onGameFlow)
         found.roleService = Net.service("roleService", "role") ~= nil
         found.onStab = Net.role("mafia", "onStab") ~= nil

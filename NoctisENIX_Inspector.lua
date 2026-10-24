@@ -24,7 +24,7 @@
     Snapshot me-require ModuleScript game (identity 2); controller bisa punya efek samping.
 ]]
 
-local VERSION = "1.4.0"
+local VERSION = "1.4.1"
 
 local genv = _G
 if type(getgenv) == "function" then
@@ -3369,8 +3369,15 @@ local SECTIONS = {
             "client.controllers.roleController.roles.jester",
             "client.controllers.roleController.roles.mirage",
             "client.controllers.roleController.roles.poisoner",
-            "client.controllers.lockerController",
-            "client.controllers.hidingController",
+            -- nama asli dari capture v2.4 pertama
+            "client.controllers.phantomVerdictController",
+            "client.controllers.phantomPresenceController",
+            "client.controllers.hidingSpotController",
+            "client.controllers.candyPumpkinController",
+            "client.controllers.jesterHauntController",
+            "client.controllers.jesterRevengeController",
+            "client.controllers.terrorHallucinationsController.nameShuffle",
+            "client.controllers.poisonController",
         }
         local function dump(label, inst, cap)
             out("")
@@ -3436,7 +3443,11 @@ local SECTIONS = {
                 if extra >= 12 then
                     break
                 end
-                if isA(d, "ModuleScript") and not seen[d] and v24Match(d.Name) then
+                local fn = fullName(d)
+                -- perintah admin Cmdr & paket library bukan logika game
+                local noise = string.find(fn, "Cmdr", 1, true) or string.find(fn, "cmdr", 1, true)
+                    or string.find(fn, "_Index", 1, true) or string.find(fn, "Disguises", 1, true)
+                if isA(d, "ModuleScript") and not seen[d] and not noise and v24Match(d.Name) then
                     seen[d] = true
                     extra = extra + 1
                     dump("v2.4 match '" .. v24Match(d.Name) .. "'", d, 900)

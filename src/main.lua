@@ -32,7 +32,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.6.0",
+    Version = "2.7.0",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -157,6 +157,7 @@ local S = {
     espStatus = true,
     espDistance = true,
     espHealth = false,
+    pumpkinEsp = false,
     espRealName = false, -- false = cuma nama karakter in-game (DisguiseName), tanpa @username
     espPanel = false, -- false = teks langsung di atas kepala tanpa kotak gelap
     voteEsp = true, -- tag "-> target" / jumlah vote di atas kepala
@@ -565,8 +566,87 @@ function ESP.statusTags(status)
     if status.poisoned then
         tags[#tags + 1] = "POISONED"
     end
+    if status.invisible then
+        tags[#tags + 1] = "INVISIBLE"
+    end
     return tags
 end
+
+-- Labu permen Halloween: Workspace.CandyPumpkins.CandyPumpkin (punya tiap pemain sendiri, muncul malam).
+local PUMPKIN_COLOR = Color3.fromRGB(255, 140, 30)
+local Pumpkins = { items = {} }
+
+function Pumpkins.clear()
+    for m, o in pairs(Pumpkins.items) do
+        pcall(o.hl.Destroy, o.hl)
+        pcall(o.bb.Destroy, o.bb)
+        Pumpkins.items[m] = nil
+    end
+end
+
+function Pumpkins.add(m)
+    local part = m:IsA("BasePart") and m or m:FindFirstChildWhichIsA("BasePart", true)
+    if not part then
+        return
+    end
+    local o = { part = part }
+    o.hl = new("Highlight", {
+        Adornee = m,
+        FillColor = PUMPKIN_COLOR,
+        FillTransparency = 0.35,
+        OutlineColor = Color3.new(1, 1, 1),
+        OutlineTransparency = 0,
+        DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+    }, espFolder)
+    o.bb = new("BillboardGui", {
+        Adornee = part,
+        Size = UDim2.fromOffset(110, 20),
+        StudsOffset = Vector3.new(0, 2.5, 0),
+        AlwaysOnTop = true,
+        LightInfluence = 0,
+        ResetOnSpawn = false,
+    }, espFolder)
+    o.tx = new("TextLabel", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBlack,
+        TextSize = 12,
+        TextColor3 = PUMPKIN_COLOR,
+        TextStrokeColor3 = Color3.new(0, 0, 0),
+        TextStrokeTransparency = 0.2,
+        Text = "CANDY",
+    }, o.bb)
+    Pumpkins.items[m] = o
+end
+
+function Pumpkins.step(origin)
+    if not S.pumpkinEsp then
+        if next(Pumpkins.items) then
+            Pumpkins.clear()
+        end
+        return
+    end
+    local folder = workspace:FindFirstChild("CandyPumpkins")
+    local alive = {}
+    if folder then
+        for _, m in ipairs(folder:GetChildren()) do
+            alive[m] = true
+            if not Pumpkins.items[m] then
+                Pumpkins.add(m)
+            end
+        end
+    end
+    for m, o in pairs(Pumpkins.items) do
+        if not alive[m] or not m.Parent or not o.part.Parent then
+            pcall(o.hl.Destroy, o.hl)
+            pcall(o.bb.Destroy, o.bb)
+            Pumpkins.items[m] = nil
+        elseif origin then
+            o.tx.Text = string.format("CANDY  %dm", math.floor((o.part.Position - origin).Magnitude + 0.5))
+        end
+    end
+end
+track(Pumpkins.clear)
 
 function ESP.step()
     local cam = getCamera()
@@ -1208,7 +1288,7 @@ end)
 UI.toggle(Pages.esp, "Show guesses too", 'Also show likely ("?") and suspected ("??") roles. Off = only certain roles.', S.showGuesses, function(v)
     S.showGuesses = v
 end)
-UI.toggle(Pages.esp, "Status tags", "DOWNED, DETAINED, SILENCED, IN LOCKER, POISONED. Downed players also blink.", S.espStatus, function(v)
+UI.toggle(Pages.esp, "Status tags", "DOWNED, DETAINED, SILENCED, IN LOCKER, POISONED, INVISIBLE (Phantom). Downed players also blink.", S.espStatus, function(v)
     S.espStatus = v
 end)
 UI.toggle(Pages.esp, "Distance", nil, S.espDistance, function(v)
@@ -1220,6 +1300,9 @@ end)
 UI.toggle(Pages.esp, "Text background", "Dark box behind the text. Off = plain outlined text right above the head.", S.espPanel, function(v)
     S.espPanel = v
 end)
+UI.toggle(Pages.esp, "Candy pumpkins", "Halloween: shows your 5 candy pumpkins through walls at night, with distance. Works even with ESP off.", S.pumpkinEsp, function(v)
+    S.pumpkinEsp = v
+end, { risk = "local" })
 UI.section(Pages.esp, "Votes")
 UI.toggle(Pages.esp, "Vote tags", "Judge vision for every role: shows who each player votes for (VOTES → name or SKIP) and how many votes each player has, above their head. Works even with ESP off.", S.voteEsp, function(v)
     S.voteEsp = v
@@ -1775,6 +1858,9 @@ safe(Net.start, {
     message = function(text, source)
         intelCall("ingestMessage", text, source)
     end,
+    effect = function(kind, a, b, c, n)
+        intelCall("ingestEffect", kind, a, b, c, n)
+    end,
     teammate = function(p, team, why)
         if team then
             intelCall("addTeam", p, team, "confirmed", why)
@@ -1826,6 +1912,8 @@ connect(RunService.Heartbeat, function(dt)
     if acc.esp >= 0.1 then
         acc.esp = 0
         safeOnce(ESP.step)
+        local myRoot = getRoot(LocalPlayer)
+        safeOnce(Pumpkins.step, myRoot and myRoot.Position)
     end
     acc.ui = acc.ui + dt
     if acc.ui >= 0.5 then

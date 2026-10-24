@@ -46,7 +46,7 @@ return function(ctx)
     for _, n in ipairs({ "dead", "downed", "detained", "witchsilenced", "silenced", "witchsilencedextended",
         "lockerpose", "inlocker", "incloset", "hiding", "hidden", "poisonapplied", "poisoncured", "ragdolled",
         "knifewound", "cheaptrickshot", "disguisename", "redactedlabel", "talliedvotes", "playervotes",
-        "votedfor", "votetarget" }) do
+        "votedfor", "votetarget", "invisible", "phantomreaping" }) do
         K.WATCH_ATTRS[n] = true
     end
     K.ROLEISH = { "role", "team", "class", "faction", "align", "side", "job" }
@@ -153,6 +153,7 @@ return function(ctx)
         animModuleOk = false,
         idKind = {},         -- [id] = kind | false
         lockerTrack = {},
+        hiders = {}, -- [UserId] = true: v2.4 locker/closet menyimpan penghuninya di attribute HiderId
         posHist = {},        -- [Player] = { {t, pos}, ... }
         lastSample = -100,
         t = { slow = -100, doors = -100, votes = -100, idKind = -100, phase = -100, wsDoors = -100,
@@ -1258,6 +1259,26 @@ return function(ctx)
         return false
     end
 
+    -- v2.4: Map.Lockers.Locker / Map.Closets.* punya attribute HiderId (UserId) selama ada yang ngumpet.
+    local function scanHiders()
+        local out = {}
+        local map = Workspace:FindFirstChild("Map")
+        if map then
+            for _, folderName in ipairs({ "Lockers", "Closets" }) do
+                local f = map:FindFirstChild(folderName)
+                if f then
+                    for _, m in ipairs(f:GetChildren()) do
+                        local id = m:GetAttribute("HiderId")
+                        if id ~= nil and m:GetAttribute("HiderClip") ~= "exit" then
+                            out[tonumber(id) or id] = true
+                        end
+                    end
+                end
+            end
+        end
+        St.hiders = out
+    end
+
     local function computeStatus(p, rec, snap, char, hum, prev)
         local s = {}
         local dead = anyFlag(snap, K.STATUS_KEYS.dead)
@@ -1284,6 +1305,9 @@ return function(ctx)
                 end
             end
         end
+        if not hiding and St.hiders[p.UserId] then
+            hiding = true
+        end
         if not hiding and hum then
             local seat = hum.SeatPart
             if seat and (seat:FindFirstAncestor("Lockers") or seat:FindFirstAncestor("Closets")) then
@@ -1293,6 +1317,8 @@ return function(ctx)
         s.hiding = hiding
         s.poisoned = flag(snap, "poisonapplied") and not flag(snap, "poisoncured")
         s.ragdolled = anyFlag(snap, K.STATUS_KEYS.ragdolled)
+        -- v2.4 Phantom: karakter dapat attribute Invisible selama ngilang, PhantomReaping waktu nge-reap
+        s.invisible = flag(snap, "invisible")
         if not char then
             -- karakter hilang (badan dibuang): flag karakter nggak kebaca, jangan dianggap "bangun lagi"
             for k, v in pairs(prev) do
@@ -1482,6 +1508,9 @@ return function(ctx)
         local rl = snap.a["redactedlabel"]
         rec.redacted = (type(rl) == "string" and rl ~= "") and rl or nil
         try("roleAttrs", scanRoleAttrs, p, rec, snap)
+        if p ~= LocalPlayer and (flag(snap, "invisible") or flag(snap, "phantomreaping")) then
+            setRole(p, "Phantom", "confirmed", flag(snap, "phantomreaping") and "reaping a soul" or "turned invisible")
+        end
         local cured = flag(snap, "poisoncured")
         local wound = flag(snap, "knifewound") or flag(snap, "cheaptrickshot")
         if rec.statusInit then
@@ -3024,7 +3053,63 @@ return function(ctx)
         if type(text) ~= "string" or text == "" then
             return
         end
+        -- Tembakan Vigilante diumumkan: "Eclipse has been shot by Athena."
+        local victimName, shooterName = string.match(text, "^%s*(.-) has been shot by (.-)%.?%s*$")
+        if shooterName and not string.find(text, "<", 1, true) then
+            local shooter = playerByName(shooterName)
+            if shooter and shooter ~= LocalPlayer then
+                pcall(setRole, shooter, "Vigilante", "confirmed", "shot " .. victimName .. " (announced)")
+            end
+        end
         pcall(onChatMessage, text, true, nil, source)
+    end
+
+    -- effectsService.playEffect (dikirim ke semua client):
+    --   "gunShot", <penembak>, <korban>, false  -> tembakan Mafia (malam)
+    --   "gunShot", <penembak>, <korban>         -> tembakan Vigilante (siang, tanpa argumen ke-4)
+    --   "phantomVerdict", "reapBegin"/"reapEnd"/..., <Phantom>, <korban>
+    function Intel.ingestEffect(kind, a, b, c, n)
+        if kind == "gunShot" then
+            local shooter = resolvePlayer(a)
+            if not shooter or shooter == LocalPlayer then
+                return false
+            end
+            local victim = resolvePlayer(b)
+            local vn = victim and nameOf(victim) or nil
+            local what = vn and ("shot " .. vn) or "fired a gun"
+            if victim then
+                St.killedAt[victim] = now()
+            end
+            local night = Game.isNight()
+            local mafia
+            if c == false then
+                mafia = true
+            elseif c == nil and (n or 0) <= 3 then
+                mafia = false
+            else
+                mafia = night == true
+            end
+            if mafia then
+                setRole(shooter, "Mafia", "confirmed", what .. " at night")
+            else
+                setRole(shooter, "Vigilante", "confirmed", what .. (night == false and " in daylight" or ""))
+            end
+            pushFeed(nameOf(shooter) .. " shot " .. (vn or "someone"))
+            return true
+        elseif kind == "phantomVerdict" then
+            local phantom = resolvePlayer(b)
+            if not phantom or phantom == LocalPlayer then
+                return false
+            end
+            local victim = resolvePlayer(c)
+            local verb = (type(a) == "string" and string.find(string.lower(a), "spare", 1, true)) and "spared " or "reaped "
+            setRole(phantom, "Phantom", "confirmed", verb .. (victim and nameOf(victim) or "a downed player"))
+            if type(a) == "string" and (a == "reapBegin" or string.find(string.lower(a), "spare", 1, true)) then
+                pushFeed(nameOf(phantom) .. " " .. verb .. (victim and nameOf(victim) or "someone"))
+            end
+            return true
+        end
+        return false
     end
 
     function Intel.start()
@@ -3076,6 +3161,7 @@ return function(ctx)
             return
         end
         local t = now()
+        try("hiders", scanHiders)
         for _, p in ipairs(Players:GetPlayers()) do
             if not St.hooks[p] then
                 hookPlayer(p)
@@ -3165,6 +3251,7 @@ return function(ctx)
         St.doors, St.doorConns = weak(), weak()
         St.doorCount = 0
         St.lockerTrack = {}
+        St.hiders = {}
         St.posHist = {}
         St.selfBusy = false
         St.gui.pg, St.gui.conn = nil, nil

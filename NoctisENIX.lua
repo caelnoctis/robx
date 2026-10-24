@@ -33,7 +33,7 @@ end
 
 local Config = {
     Name = "NoctisENIX",
-    Version = "2.6.0",
+    Version = "2.7.0",
     ToggleKey = Enum.KeyCode.RightShift,
 }
 
@@ -158,6 +158,7 @@ local S = {
     espStatus = true,
     espDistance = true,
     espHealth = false,
+    pumpkinEsp = false,
     espRealName = false, -- false = cuma nama karakter in-game (DisguiseName), tanpa @username
     espPanel = false, -- false = teks langsung di atas kepala tanpa kotak gelap
     voteEsp = true, -- tag "-> target" / jumlah vote di atas kepala
@@ -2928,7 +2929,7 @@ return function(ctx)
     for _, n in ipairs({ "dead", "downed", "detained", "witchsilenced", "silenced", "witchsilencedextended",
         "lockerpose", "inlocker", "incloset", "hiding", "hidden", "poisonapplied", "poisoncured", "ragdolled",
         "knifewound", "cheaptrickshot", "disguisename", "redactedlabel", "talliedvotes", "playervotes",
-        "votedfor", "votetarget" }) do
+        "votedfor", "votetarget", "invisible", "phantomreaping" }) do
         K.WATCH_ATTRS[n] = true
     end
     K.ROLEISH = { "role", "team", "class", "faction", "align", "side", "job" }
@@ -3035,6 +3036,7 @@ return function(ctx)
         animModuleOk = false,
         idKind = {},         -- [id] = kind | false
         lockerTrack = {},
+        hiders = {}, -- [UserId] = true: v2.4 locker/closet menyimpan penghuninya di attribute HiderId
         posHist = {},        -- [Player] = { {t, pos}, ... }
         lastSample = -100,
         t = { slow = -100, doors = -100, votes = -100, idKind = -100, phase = -100, wsDoors = -100,
@@ -4140,6 +4142,26 @@ return function(ctx)
         return false
     end
 
+    -- v2.4: Map.Lockers.Locker / Map.Closets.* punya attribute HiderId (UserId) selama ada yang ngumpet.
+    local function scanHiders()
+        local out = {}
+        local map = Workspace:FindFirstChild("Map")
+        if map then
+            for _, folderName in ipairs({ "Lockers", "Closets" }) do
+                local f = map:FindFirstChild(folderName)
+                if f then
+                    for _, m in ipairs(f:GetChildren()) do
+                        local id = m:GetAttribute("HiderId")
+                        if id ~= nil and m:GetAttribute("HiderClip") ~= "exit" then
+                            out[tonumber(id) or id] = true
+                        end
+                    end
+                end
+            end
+        end
+        St.hiders = out
+    end
+
     local function computeStatus(p, rec, snap, char, hum, prev)
         local s = {}
         local dead = anyFlag(snap, K.STATUS_KEYS.dead)
@@ -4166,6 +4188,9 @@ return function(ctx)
                 end
             end
         end
+        if not hiding and St.hiders[p.UserId] then
+            hiding = true
+        end
         if not hiding and hum then
             local seat = hum.SeatPart
             if seat and (seat:FindFirstAncestor("Lockers") or seat:FindFirstAncestor("Closets")) then
@@ -4175,6 +4200,8 @@ return function(ctx)
         s.hiding = hiding
         s.poisoned = flag(snap, "poisonapplied") and not flag(snap, "poisoncured")
         s.ragdolled = anyFlag(snap, K.STATUS_KEYS.ragdolled)
+        -- v2.4 Phantom: karakter dapat attribute Invisible selama ngilang, PhantomReaping waktu nge-reap
+        s.invisible = flag(snap, "invisible")
         if not char then
             -- karakter hilang (badan dibuang): flag karakter nggak kebaca, jangan dianggap "bangun lagi"
             for k, v in pairs(prev) do
@@ -4364,6 +4391,9 @@ return function(ctx)
         local rl = snap.a["redactedlabel"]
         rec.redacted = (type(rl) == "string" and rl ~= "") and rl or nil
         try("roleAttrs", scanRoleAttrs, p, rec, snap)
+        if p ~= LocalPlayer and (flag(snap, "invisible") or flag(snap, "phantomreaping")) then
+            setRole(p, "Phantom", "confirmed", flag(snap, "phantomreaping") and "reaping a soul" or "turned invisible")
+        end
         local cured = flag(snap, "poisoncured")
         local wound = flag(snap, "knifewound") or flag(snap, "cheaptrickshot")
         if rec.statusInit then
@@ -5906,7 +5936,63 @@ return function(ctx)
         if type(text) ~= "string" or text == "" then
             return
         end
+        -- Tembakan Vigilante diumumkan: "Eclipse has been shot by Athena."
+        local victimName, shooterName = string.match(text, "^%s*(.-) has been shot by (.-)%.?%s*$")
+        if shooterName and not string.find(text, "<", 1, true) then
+            local shooter = playerByName(shooterName)
+            if shooter and shooter ~= LocalPlayer then
+                pcall(setRole, shooter, "Vigilante", "confirmed", "shot " .. victimName .. " (announced)")
+            end
+        end
         pcall(onChatMessage, text, true, nil, source)
+    end
+
+    -- effectsService.playEffect (dikirim ke semua client):
+    --   "gunShot", <penembak>, <korban>, false  -> tembakan Mafia (malam)
+    --   "gunShot", <penembak>, <korban>         -> tembakan Vigilante (siang, tanpa argumen ke-4)
+    --   "phantomVerdict", "reapBegin"/"reapEnd"/..., <Phantom>, <korban>
+    function Intel.ingestEffect(kind, a, b, c, n)
+        if kind == "gunShot" then
+            local shooter = resolvePlayer(a)
+            if not shooter or shooter == LocalPlayer then
+                return false
+            end
+            local victim = resolvePlayer(b)
+            local vn = victim and nameOf(victim) or nil
+            local what = vn and ("shot " .. vn) or "fired a gun"
+            if victim then
+                St.killedAt[victim] = now()
+            end
+            local night = Game.isNight()
+            local mafia
+            if c == false then
+                mafia = true
+            elseif c == nil and (n or 0) <= 3 then
+                mafia = false
+            else
+                mafia = night == true
+            end
+            if mafia then
+                setRole(shooter, "Mafia", "confirmed", what .. " at night")
+            else
+                setRole(shooter, "Vigilante", "confirmed", what .. (night == false and " in daylight" or ""))
+            end
+            pushFeed(nameOf(shooter) .. " shot " .. (vn or "someone"))
+            return true
+        elseif kind == "phantomVerdict" then
+            local phantom = resolvePlayer(b)
+            if not phantom or phantom == LocalPlayer then
+                return false
+            end
+            local victim = resolvePlayer(c)
+            local verb = (type(a) == "string" and string.find(string.lower(a), "spare", 1, true)) and "spared " or "reaped "
+            setRole(phantom, "Phantom", "confirmed", verb .. (victim and nameOf(victim) or "a downed player"))
+            if type(a) == "string" and (a == "reapBegin" or string.find(string.lower(a), "spare", 1, true)) then
+                pushFeed(nameOf(phantom) .. " " .. verb .. (victim and nameOf(victim) or "someone"))
+            end
+            return true
+        end
+        return false
     end
 
     function Intel.start()
@@ -5958,6 +6044,7 @@ return function(ctx)
             return
         end
         local t = now()
+        try("hiders", scanHiders)
         for _, p in ipairs(Players:GetPlayers()) do
             if not St.hooks[p] then
                 hookPlayer(p)
@@ -6047,6 +6134,7 @@ return function(ctx)
         St.doors, St.doorConns = weak(), weak()
         St.doorCount = 0
         St.lockerTrack = {}
+        St.hiders = {}
         St.posHist = {}
         St.selfBusy = false
         St.gui.pg, St.gui.conn = nil, nil
@@ -6724,6 +6812,17 @@ return function(ctx)
     end
     Net.listen = listen
 
+    -- effectsService.playEffect: efek yang server siarkan ke semua client ("gunShot" penembak korban,
+    -- "phantomVerdict" aksi Phantom korban). Argumen mentah diteruskan ke hook "effect".
+    local function onEffect(...)
+        local args = table.pack(...)
+        local kind = args[1]
+        if kind == "gunShot" or kind == "phantomVerdict" then
+            call("effect", kind, args[2], args[3], args[4], args.n)
+            note("effect " .. kind)
+        end
+    end
+
     function Net.start(h)
         hooks = h or {}
         if started then
@@ -6738,6 +6837,7 @@ return function(ctx)
         found.deathCutscene = listen(Net.service("gameService", "playDeathCutscene"), onDeath("death cutscene"))
         found.bodyFound = listen(Net.service("gameService", "playBodyFoundCutscene"), onDeath("body found"))
         found.topbar = listen(Net.service("gameService", "setTopbarText"), onTopbar)
+        found.playEffect = listen(Net.service("effectsService", "playEffect"), onEffect)
         found.gameFlow = listen(RS:FindFirstChild("GameFlowLogRemote"), onGameFlow)
         found.roleService = Net.service("roleService", "role") ~= nil
         found.onStab = Net.role("mafia", "onStab") ~= nil
@@ -10286,8 +10386,87 @@ function ESP.statusTags(status)
     if status.poisoned then
         tags[#tags + 1] = "POISONED"
     end
+    if status.invisible then
+        tags[#tags + 1] = "INVISIBLE"
+    end
     return tags
 end
+
+-- Labu permen Halloween: Workspace.CandyPumpkins.CandyPumpkin (punya tiap pemain sendiri, muncul malam).
+local PUMPKIN_COLOR = Color3.fromRGB(255, 140, 30)
+local Pumpkins = { items = {} }
+
+function Pumpkins.clear()
+    for m, o in pairs(Pumpkins.items) do
+        pcall(o.hl.Destroy, o.hl)
+        pcall(o.bb.Destroy, o.bb)
+        Pumpkins.items[m] = nil
+    end
+end
+
+function Pumpkins.add(m)
+    local part = m:IsA("BasePart") and m or m:FindFirstChildWhichIsA("BasePart", true)
+    if not part then
+        return
+    end
+    local o = { part = part }
+    o.hl = new("Highlight", {
+        Adornee = m,
+        FillColor = PUMPKIN_COLOR,
+        FillTransparency = 0.35,
+        OutlineColor = Color3.new(1, 1, 1),
+        OutlineTransparency = 0,
+        DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+    }, espFolder)
+    o.bb = new("BillboardGui", {
+        Adornee = part,
+        Size = UDim2.fromOffset(110, 20),
+        StudsOffset = Vector3.new(0, 2.5, 0),
+        AlwaysOnTop = true,
+        LightInfluence = 0,
+        ResetOnSpawn = false,
+    }, espFolder)
+    o.tx = new("TextLabel", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBlack,
+        TextSize = 12,
+        TextColor3 = PUMPKIN_COLOR,
+        TextStrokeColor3 = Color3.new(0, 0, 0),
+        TextStrokeTransparency = 0.2,
+        Text = "CANDY",
+    }, o.bb)
+    Pumpkins.items[m] = o
+end
+
+function Pumpkins.step(origin)
+    if not S.pumpkinEsp then
+        if next(Pumpkins.items) then
+            Pumpkins.clear()
+        end
+        return
+    end
+    local folder = workspace:FindFirstChild("CandyPumpkins")
+    local alive = {}
+    if folder then
+        for _, m in ipairs(folder:GetChildren()) do
+            alive[m] = true
+            if not Pumpkins.items[m] then
+                Pumpkins.add(m)
+            end
+        end
+    end
+    for m, o in pairs(Pumpkins.items) do
+        if not alive[m] or not m.Parent or not o.part.Parent then
+            pcall(o.hl.Destroy, o.hl)
+            pcall(o.bb.Destroy, o.bb)
+            Pumpkins.items[m] = nil
+        elseif origin then
+            o.tx.Text = string.format("CANDY  %dm", math.floor((o.part.Position - origin).Magnitude + 0.5))
+        end
+    end
+end
+track(Pumpkins.clear)
 
 function ESP.step()
     local cam = getCamera()
@@ -10929,7 +11108,7 @@ end)
 UI.toggle(Pages.esp, "Show guesses too", 'Also show likely ("?") and suspected ("??") roles. Off = only certain roles.', S.showGuesses, function(v)
     S.showGuesses = v
 end)
-UI.toggle(Pages.esp, "Status tags", "DOWNED, DETAINED, SILENCED, IN LOCKER, POISONED. Downed players also blink.", S.espStatus, function(v)
+UI.toggle(Pages.esp, "Status tags", "DOWNED, DETAINED, SILENCED, IN LOCKER, POISONED, INVISIBLE (Phantom). Downed players also blink.", S.espStatus, function(v)
     S.espStatus = v
 end)
 UI.toggle(Pages.esp, "Distance", nil, S.espDistance, function(v)
@@ -10941,6 +11120,9 @@ end)
 UI.toggle(Pages.esp, "Text background", "Dark box behind the text. Off = plain outlined text right above the head.", S.espPanel, function(v)
     S.espPanel = v
 end)
+UI.toggle(Pages.esp, "Candy pumpkins", "Halloween: shows your 5 candy pumpkins through walls at night, with distance. Works even with ESP off.", S.pumpkinEsp, function(v)
+    S.pumpkinEsp = v
+end, { risk = "local" })
 UI.section(Pages.esp, "Votes")
 UI.toggle(Pages.esp, "Vote tags", "Judge vision for every role: shows who each player votes for (VOTES → name or SKIP) and how many votes each player has, above their head. Works even with ESP off.", S.voteEsp, function(v)
     S.voteEsp = v
@@ -11496,6 +11678,9 @@ safe(Net.start, {
     message = function(text, source)
         intelCall("ingestMessage", text, source)
     end,
+    effect = function(kind, a, b, c, n)
+        intelCall("ingestEffect", kind, a, b, c, n)
+    end,
     teammate = function(p, team, why)
         if team then
             intelCall("addTeam", p, team, "confirmed", why)
@@ -11547,6 +11732,8 @@ connect(RunService.Heartbeat, function(dt)
     if acc.esp >= 0.1 then
         acc.esp = 0
         safeOnce(ESP.step)
+        local myRoot = getRoot(LocalPlayer)
+        safeOnce(Pumpkins.step, myRoot and myRoot.Position)
     end
     acc.ui = acc.ui + dt
     if acc.ui >= 0.5 then
