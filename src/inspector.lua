@@ -1,6 +1,6 @@
 --[[
     NoctisENIX Inspector
-    Game     : MAFIA [V2.3] - ACT II  (Topline Studios Inc)
+    Game     : MAFIA [V2.4] - ACT II  (Topline Studios Inc)
     Executor : Xeno (semua fungsi executor dicek dulu, semuanya opsional)
 
     Buat apa: ngumpulin isi game yang sebenarnya (modul, remote, animasi,
@@ -23,7 +23,7 @@
     Snapshot me-require ModuleScript game (identity 2); controller bisa punya efek samping.
 ]]
 
-local VERSION = "1.3.0"
+local VERSION = "1.4.0"
 
 local genv = _G
 if type(getgenv) == "function" then
@@ -225,8 +225,24 @@ local LAYER = { ScreenGui = true, BillboardGui = true, SurfaceGui = true }
 local TEXTCLS = { TextLabel = true, TextButton = true, TextBox = true }
 local ADORN_CLS = { Highlight = true, BillboardGui = true, SurfaceGui = true, SelectionBox = true, BoxHandleAdornment = true }
 local PRE_TAGS = { "Downed", "Detained", "Dead", "Ragdolled", "witchSilenced", "witchSilencedExtended", "Silenced", "Locked", "poisonApplied", "poisonCured", "knifeWound", "lockerPose", "Hiding", "InLocker", "Disguised" }
-local SPAWN_WORDS = { "banana", "corpse", "body", "ragdoll", "knife", "glock", "medkit", "blood", "puddle" }
-local MAP_WORDS = { "door", "locker", "closet", "medkit", "corpse", "bodies", "body", "map" }
+-- Kata kunci fitur MAFIA v2.4 (Phantom rework, Last Laugh, Terror Mirage, racun, locker, Halloween).
+local V24_WORDS = { "phantom", "reap", "spare", "haunt", "soul", "invis", "jester", "lastlaugh", "laugh",
+    "terror", "mirage", "gibberish", "shuffle", "poison", "locker", "closet", "hiding", "hide", "vent", "peek",
+    "pumpkin", "candy", "halloween", "veil", "perk", "wisp", "breath", "footprint" }
+local function v24Match(name)
+    local l = string.lower(tostring(name))
+    for _, w in ipairs(V24_WORDS) do
+        if string.find(l, w, 1, true) then
+            return w
+        end
+    end
+    return nil
+end
+
+local SPAWN_WORDS = { "banana", "corpse", "body", "ragdoll", "knife", "glock", "medkit", "blood", "puddle",
+    -- v2.4: vortex Reap Phantom, retakan haunt Jester, jejak/kabut Phantom, labu permen
+    "vortex", "crack", "soul", "wisp", "footprint", "frost", "haze", "pumpkin", "candy", "phantom", "haunt" }
+local MAP_WORDS = { "door", "locker", "closet", "medkit", "corpse", "bodies", "body", "map", "pumpkin", "vent" }
 local GC_KEYS = { "role", "Role", "currentRole", "team", "Team", "roles", "players", "playerRoles" }
 local BORING_STATES = { Running = true, RunningNoPhysics = true, Jumping = true, Freefall = true, Landed = true, Climbing = true, Swimming = true }
 local SKIP_PLAYER_CHILD = { PlayerGui = true, PlayerScripts = true, Backpack = true, StarterGear = true }
@@ -3286,6 +3302,49 @@ local SECTIONS = {
             end
         end
     end },
+    { "v24", "MAFIA v2.4 (names matching Phantom / Jester / Terror / poison / locker / candy; read-only)", function(out, X)
+        local n = 0
+        for _, r in ipairs(moduleRoots()) do
+            local list = X.desc[r[2]] or descendants(r[2])
+            X.desc[r[2]] = list
+            for _, d in ipairs(list) do
+                local w = v24Match(d.Name)
+                if w and n < 400 then
+                    n = n + 1
+                    out(string.format("module-tree [%s] %s (%s)", w, fullName(d), d.ClassName))
+                end
+            end
+        end
+        for _, root in ipairs({ ReplicatedStorage, Workspace, Lighting }) do
+            for _, d in ipairs(descendants(root)) do
+                local w = v24Match(d.Name)
+                if w and n < 400 then
+                    n = n + 1
+                    local a = attrsInline(d, 10)
+                    out(string.format("[%s] %s (%s)%s", w, fullName(d), d.ClassName, a ~= "" and (" attrs: " .. a) or ""))
+                end
+            end
+        end
+        if n >= 400 then
+            out("... cap 400 reached")
+        end
+        -- Attribute pemain / karakter yang namanya cocok (Haunted, Souls, Terror, Poison, ...).
+        for _, p in ipairs(Players:GetPlayers()) do
+            for _, inst in ipairs({ p, p.Character }) do
+                local okA, attrs = pcall(function()
+                    return inst:GetAttributes()
+                end)
+                if okA and type(attrs) == "table" then
+                    for k, v in pairs(attrs) do
+                        if v24Match(k) then
+                            out(string.format("attr %s.%s = %s", fullName(inst), tostring(k), tostring(v)))
+                        end
+                    end
+                end
+            end
+        end
+        out("v2.4 names found: " .. n)
+    end },
     { "decompile", "DECOMPILE (client role modules; read-only, nothing is executed)", function(out, X)
         if X.opts.noDecompile then
             out("(decompile skipped)")
@@ -3304,52 +3363,87 @@ local SECTIONS = {
             "client.controllers.roleController.roles.judge",
             "client.controllers.roleController.judgeBallotSight",
             "client.controllers.pointingController",
+            -- v2.4: Phantom rework, haunt Jester, Terror Mirage, racun tanpa bar, locker baru
+            "client.controllers.roleController.roles.phantom",
+            "client.controllers.roleController.roles.jester",
+            "client.controllers.roleController.roles.mirage",
+            "client.controllers.roleController.roles.poisoner",
+            "client.controllers.lockerController",
+            "client.controllers.hidingController",
         }
-        for _, path in ipairs(TARGETS) do
-            local inst = resolve(path, X.desc)
+        local function dump(label, inst, cap)
             out("")
-            out("--- " .. path .. " -> " .. (inst and fullName(inst) or "not found"))
-            if inst then
-                local box = { done = false }
-                task.spawn(function()
-                    local ok, src = pcall(decompile, inst)
-                    box.ok, box.src, box.done = ok, src, true
-                end)
-                local waited = 0
-                while not box.done and waited < 15 do
-                    local dt = task.wait(0.1)
-                    waited = waited + ((type(dt) == "number" and dt > 0) and dt or 0.1)
+            out("--- " .. label .. " -> " .. (inst and fullName(inst) or "not found"))
+            if not inst then
+                return
+            end
+            local box = { done = false }
+            task.spawn(function()
+                local ok, src = pcall(decompile, inst)
+                box.ok, box.src, box.done = ok, src, true
+            end)
+            local waited = 0
+            while not box.done and waited < 15 do
+                local dt = task.wait(0.1)
+                waited = waited + ((type(dt) == "number" and dt > 0) and dt or 0.1)
+            end
+            if not box.done then
+                out("  decompile: timeout (15s)")
+            elseif not box.ok or type(box.src) ~= "string" then
+                out("  decompile: error " .. tostring(box.src))
+            else
+                local lines = {}
+                for line in string.gmatch(box.src .. "\n", "([^\n]*)\n") do
+                    lines[#lines + 1] = line
                 end
-                if not box.done then
-                    out("  decompile: timeout (15s)")
-                elseif not box.ok or type(box.src) ~= "string" then
-                    out("  decompile: error " .. tostring(box.src))
-                else
-                    local lines = {}
-                    for line in string.gmatch(box.src .. "\n", "([^\n]*)\n") do
-                        lines[#lines + 1] = line
+                -- Ringkasan: baris yang memanggil remote / handler penting (+-3 baris konteks)
+                out("  lines: " .. #lines .. "  (key calls below, then source)")
+                for i, line in ipairs(lines) do
+                    local l = string.lower(line)
+                    if string.find(l, "invokeserver", 1, true) or string.find(l, "fireserver", 1, true)
+                        or string.find(l, "onstab", 1, true) or string.find(l, "onshoot", 1, true)
+                        or string.find(l, "onheal", 1, true) or string.find(l, "handlemafiastab", 1, true)
+                        or string.find(l, "settargetcharacter", 1, true) or string.find(l, "bindaction", 1, true)
+                        or string.find(l, "setattribute", 1, true) or string.find(l, "getattribute", 1, true)
+                        or string.find(l, "onclientevent", 1, true) then
+                        out(string.format("  >> %d: %s", i, line))
                     end
-                    -- Ringkasan: baris yang memanggil remote / handler penting (+-3 baris konteks)
-                    out("  lines: " .. #lines .. "  (key calls below, then source)")
-                    for i, line in ipairs(lines) do
-                        local l = string.lower(line)
-                        if string.find(l, "invokeserver", 1, true) or string.find(l, "fireserver", 1, true)
-                            or string.find(l, "onstab", 1, true) or string.find(l, "onshoot", 1, true)
-                            or string.find(l, "onheal", 1, true) or string.find(l, "handlemafiastab", 1, true)
-                            or string.find(l, "settargetcharacter", 1, true) or string.find(l, "bindaction", 1, true) then
-                            out(string.format("  >> %d: %s", i, line))
-                        end
-                    end
-                    local cap = math.min(#lines, 1500)
-                    for i = 1, cap do
-                        out(string.format("  %4d| %s", i, lines[i]))
-                    end
-                    if #lines > cap then
-                        out("  ... (" .. (#lines - cap) .. " more lines cut)")
-                    end
+                end
+                cap = math.min(#lines, cap)
+                for i = 1, cap do
+                    out(string.format("  %4d| %s", i, lines[i]))
+                end
+                if #lines > cap then
+                    out("  ... (" .. (#lines - cap) .. " more lines cut)")
                 end
             end
         end
+        local seen = {}
+        for _, path in ipairs(TARGETS) do
+            local inst = resolve(path, X.desc)
+            if inst then
+                seen[inst] = true
+            end
+            dump(path, inst, 1500)
+        end
+        -- v2.4: modul client lain yang namanya cocok (Phantom, locker, Terror, labu, ...), maks 12.
+        local extra = 0
+        for _, r in ipairs(moduleRoots()) do
+            local list = X.desc[r[2]] or descendants(r[2])
+            X.desc[r[2]] = list
+            for _, d in ipairs(list) do
+                if extra >= 12 then
+                    break
+                end
+                if isA(d, "ModuleScript") and not seen[d] and v24Match(d.Name) then
+                    seen[d] = true
+                    extra = extra + 1
+                    dump("v2.4 match '" .. v24Match(d.Name) .. "'", d, 900)
+                end
+            end
+        end
+        out("")
+        out("v2.4 extra modules decompiled: " .. extra .. (extra >= 12 and " (cap 12 reached)" or ""))
     end },
 }
 

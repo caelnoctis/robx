@@ -22,7 +22,8 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/caelnoctis/robx/claud
 2. Press **Start live log**, then play one full round: night, someone gets stabbed, someone gets healed, meeting, voting. If you can, play once as Mafia and once as another role.
 3. Press **Save**. The result is saved to Xeno's `workspace/NoctisENIX/` folder (and copied to the clipboard).
 4. If the screen stays dark during an EMP even with Fullbright on: **Start live log**, wait for an EMP, then **Save**. The **LIGHTING** section and the `LIGHT` lines in the live log show everything the EMP changes (Lighting properties, effects in Lighting / Camera, the `EmpInk` / `EmpAfterimage` ScreenGuis, lights). This part only reads; it writes nothing to the game.
-5. Send that `.txt` file. It contains the game's module structure, role configs, attributes, animations, remotes and an event log for the round, so role detection and the action features can be matched to the game's real names.
+5. **MAFIA v2.4 (Inspector 1.4.0):** the **MAFIA v2.4** section lists every module, remote, map object and player attribute whose name matches the new features (Phantom reap / spare / souls / Haunted, Jester haunt, Mirage Terror, poison, lockers, candy pumpkins). **DECOMPILE** also reads the Phantom, Jester, Mirage and Poisoner role modules, the locker controllers and up to 12 other modules with matching names. The live log now also catches vortexes, floor cracks, wisps, frosted footprints and pumpkins as they spawn. Best captures: a round with 11+ players (so a Phantom spawns), someone getting poisoned, getting in and out of a locker, and a Jester getting voted out on a Pro server.
+6. Send that `.txt` file. It contains the game's module structure, role configs, attributes, animations, remotes and an event log for the round, so role detection and the action features can be matched to the game's real names.
 
 ## Look (v2.6)
 

@@ -223,9 +223,15 @@ end
 ----------------------------------------------------------------------
 -- Snapshot #1
 ----------------------------------------------------------------------
+-- v2.4: benda / attribute baru (labu permen, status Haunted)
+__mk("Part", { Name = "CandyPumpkin" }, workspace)
+alice:SetAttribute("Haunted", true)
 local ok, n = I.snapshot()
 check(ok == true and type(n) == "number" and n > 80, "snapshot ok: " .. tostring(n))
 local t = I.text()
+check(has(t, "MAFIA v2.4 (names matching"), "v2.4 section present")
+check(has(t, "[pumpkin] ") and has(t, "CandyPumpkin"), "v2.4 lists the candy pumpkin")
+check(has(t, ".Haunted = true"), "v2.4 lists the Haunted attribute")
 for i, title in ipairs({ "EXECUTOR", "GAME", "TREE", "MODULE PROBE", "REMOTES", "ANIMATIONS", "TOOLS", "PLAYERS", "GLOBAL STATE", "PLAYERGUI", "WORKSPACE OVERVIEW", "TEXTCHATSERVICE", "GETGC PROBE", "GETCONNECTIONS PROBE" }) do
     check(has(t, "==== [" .. i .. "] " .. title), "section header " .. i .. " " .. title)
 end
@@ -816,7 +822,7 @@ check(okS == true and type(info) == "string" and string.match(info, "^NoctisENIX
 local path = info and string.match(info, "^(%S+)")
 check(folders.NoctisENIX == true, "makefolder called")
 check(path and files[path] ~= nil and files[path] == __clip, "file content == clipboard")
-check(I.version == "1.3.0", "inspector version 1.3.0: " .. tostring(I.version))
+check(I.version == "1.4.0", "inspector version 1.4.0: " .. tostring(I.version))
 check(path and has(files[path], "NoctisENIX Inspector v" .. I.version) and has(files[path], "executor: MockExec") and has(files[path], "==== LIVE LOG ===="), "saved text has header + live log")
 check(St.lastSave == info, "status keeps last save")
 check(St.savedMark == St.pushed + St.snapN, "save marks everything as saved")
